@@ -34,10 +34,8 @@ pub fn run(
             folder
         );
 
-        let cmd = shlex::split(&hook.command)
-            .ok_or_else(|| anyhow::anyhow!("Invalid command {:?}", hook.command))?;
-        let child = Command::new(&cmd[0])
-            .args(&cmd[1..])
+        let child = Command::new(&hook.command[0])
+            .args(&hook.command[1..])
             .env("STFED_PATH", path.unwrap_or(&PathBuf::from("")))
             .env("STFED_FOLDER", folder)
             .stdin(Stdio::null())

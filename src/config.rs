@@ -4,6 +4,7 @@ use std::fs;
 use std::path::PathBuf;
 
 use anyhow::Context;
+use serde::de::Deserialize;
 
 /// Local configuration
 #[derive(Debug, serde::Deserialize)]
@@ -80,9 +81,19 @@ pub struct FolderHook {
     /// Event filter
     pub filter: Option<String>,
     /// Command
-    pub command: String,
+    #[serde(deserialize_with = "deserialize_command")]
+    pub command: Vec<String>,
     /// Allow concurrent runs for the same hook
     pub allow_concurrent: Option<bool>,
+}
+
+/// Deserialize command string into a vec directly usable by std::Command
+fn deserialize_command<'de, D>(deserializer: D) -> Result<Vec<String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let s = String::deserialize(deserializer)?;
+    shlex::split(&s).ok_or_else(|| serde::de::Error::custom(format!("Invalid command: {:?}", s)))
 }
 
 /// Folder event kind
