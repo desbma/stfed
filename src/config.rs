@@ -89,7 +89,7 @@ pub struct FolderHook {
     pub allow_concurrent: Option<bool>,
 }
 
-/// Deserialize command string into a vec directly usable by std::Command
+/// Deserialize filter into a glob matcher to validate glob expression
 fn deserialize_glob<'de, D>(deserializer: D) -> Result<Option<globset::GlobMatcher>, D::Error>
 where
     D: serde::Deserializer<'de>,
