@@ -1,0 +1,17 @@
+[Unit]
+Description=Syncthing Folder Event Daemon
+BindsTo=syncthing.service
+After=syncthing.service
+
+[Service]
+ExecStart=/usr/local/bin/stfed
+Restart=on-failure
+RestartSec=5
+
+# Hardening
+SystemCallArchitectures=native
+MemoryDenyWriteExecute=true
+NoNewPrivileges=true
+
+[Install]
+WantedBy=default.target
