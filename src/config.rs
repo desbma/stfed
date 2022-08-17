@@ -19,7 +19,7 @@ pub struct Config {
 /// Root local Syncthing configuration
 #[derive(serde::Deserialize)]
 struct SyncthingXmlConfig {
-    /// "GUI" configuration part, whataver that means
+    /// "GUI" configuration part, whatever that means
     gui: SyncthingXmlConfigGui,
 }
 
@@ -57,7 +57,7 @@ impl Default for Config {
         Self::default_from_syncthing_config()
             .context(format!(
                 "Unable to guess {} configuration field values from Synthing config, \
-             please write a config file",
+                 please write a config file",
                 env!("CARGO_PKG_NAME")
             ))
             .unwrap()
