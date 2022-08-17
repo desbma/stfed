@@ -72,19 +72,37 @@ pub struct FolderConfig {
 }
 
 /// Configuration for a folder hook
-#[derive(Clone, Debug, serde::Deserialize, Eq, Hash, PartialEq)]
+#[derive(Clone, Debug, serde::Deserialize)]
 pub struct FolderHook {
     /// Absolute path of the folder
     pub folder: PathBuf,
     /// Event to hook
     pub event: FolderEvent,
     /// Event filter
-    pub filter: Option<String>,
+    #[serde(default)]
+    #[serde(deserialize_with = "deserialize_glob")]
+    pub filter: Option<globset::GlobMatcher>,
     /// Command
     #[serde(deserialize_with = "deserialize_command")]
     pub command: Vec<String>,
     /// Allow concurrent runs for the same hook
     pub allow_concurrent: Option<bool>,
+}
+
+/// Deserialize command string into a vec directly usable by std::Command
+fn deserialize_glob<'de, D>(deserializer: D) -> Result<Option<globset::GlobMatcher>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let opt: Option<String> = Option::deserialize(deserializer)?;
+    opt.map(|s| {
+        globset::GlobBuilder::new(&s)
+            .literal_separator(true)
+            .build()
+            .map(|g| g.compile_matcher())
+            .map_err(serde::de::Error::custom)
+    })
+    .map_or(Ok(None), |v| v.map(Some))
 }
 
 /// Deserialize command string into a vec directly usable by std::Command

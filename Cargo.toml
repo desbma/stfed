@@ -5,6 +5,7 @@ edition = "2021"
 
 [dependencies]
 anyhow = { version = "1.0", default-features = false, features = ["std", "backtrace"] }
+globset = { version = "0.4", default-features = false }
 lazy_static = { version = "1.4", default-features = false }
 log = { version = "0.4", default-features = false, features = ["max_level_trace", "release_max_level_info"] }
 quick-xml = { version = "0.23", default-features = false, features = ["serialize"] }

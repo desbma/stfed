@@ -1,8 +1,11 @@
 //! Syncthing Folder Event Daemon
 
-use std::collections::hash_map::{Entry, HashMap};
+use std::collections::{
+    hash_map::{Entry, HashMap},
+    HashSet,
+};
 use std::path::Path;
-use std::sync::mpsc;
+use std::sync::{mpsc, Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 
@@ -21,6 +24,8 @@ fn main() -> anyhow::Result<()> {
 
     // Parse config
     let (cfg, hooks) = config::parse_config().context("Failed to read local config")?;
+
+    // Build hook map for fast matching
     let mut hooks_map: HashMap<(config::FolderEvent, &Path), Vec<config::FolderHook>> =
         HashMap::new();
     for hook in hooks.hooks.iter() {
@@ -34,18 +39,24 @@ fn main() -> anyhow::Result<()> {
         }
     }
 
+    // Setup running hooks state
+    let running_hooks: Arc<Mutex<HashSet<hook::FolderHookId>>> =
+        Arc::new(Mutex::new(HashSet::new()));
+    let running_hooks_reaper = Arc::clone(&running_hooks);
+
     // Create reaper thread and channel
     let (reaper_tx, reaper_rx) = mpsc::channel();
     thread::Builder::new()
         .name("reaper".to_string())
-        .spawn(move || -> anyhow::Result<()> { hook::reaper(reaper_rx) })?;
+        .spawn(move || -> anyhow::Result<()> { hook::reaper(reaper_rx, &running_hooks_reaper) })?;
 
     loop {
         // Setup client
         let client = syncthing::SyncthingClient::new(&cfg)?;
 
-        // Handle events
+        // Event loop
         for event in client.iter_events() {
+            // Handle special events
             let event = match event {
                 Err(ref err) => {
                     if let Some(err) = err.downcast_ref::<syncthing::ServerGone>() {
@@ -76,8 +87,14 @@ fn main() -> anyhow::Result<()> {
                         .get(&(config::FolderEvent::FileDownSyncDone, &folder))
                         .unwrap_or(&vec![])
                     {
-                        // TODO match file from filter
-                        hook::run(hook, Some(&path), &folder, &reaper_tx)?;
+                        if hook
+                            .filter
+                            .as_ref()
+                            .map(|g| g.is_match(&path))
+                            .unwrap_or(true)
+                        {
+                            hook::run(hook, Some(&path), &folder, &reaper_tx, &running_hooks)?;
+                        }
                     }
                 }
                 syncthing::SyncthingEvent::FolderDownSyncDone { folder } => {
@@ -85,7 +102,7 @@ fn main() -> anyhow::Result<()> {
                         .get(&(config::FolderEvent::FolderDownSyncDone, &folder))
                         .unwrap_or(&vec![])
                     {
-                        hook::run(hook, None, &folder, &reaper_tx)?;
+                        hook::run(hook, None, &folder, &reaper_tx, &running_hooks)?;
                     }
                 }
                 syncthing::SyncthingEvent::FileConflict { path, folder } => {
@@ -93,7 +110,7 @@ fn main() -> anyhow::Result<()> {
                         .get(&(config::FolderEvent::FileConflict, &folder))
                         .unwrap_or(&vec![])
                     {
-                        hook::run(hook, Some(&path), &folder, &reaper_tx)?;
+                        hook::run(hook, Some(&path), &folder, &reaper_tx, &running_hooks)?;
                     }
                 }
             }
