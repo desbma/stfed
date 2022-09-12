@@ -3,6 +3,11 @@ name = "stfed"
 version = "0.1.0"
 edition = "2021"
 
+[profile.release]
+lto = true
+codegen-units = 1
+strip = true
+
 [dependencies]
 anyhow = { version = "1.0", default-features = false, features = ["std", "backtrace"] }
 globset = { version = "0.4", default-features = false }

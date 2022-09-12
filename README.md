@@ -26,7 +26,6 @@ You need a Rust build environment for example from [rustup](https://rustup.rs/).
 
 ```
 cargo build --release
-strip --strip-all target/release/stfed
 install -Dm 755 -t /usr/local/bin target/release/stfed
 ```
 
