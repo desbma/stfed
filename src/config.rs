@@ -148,7 +148,6 @@ pub fn parse_config() -> anyhow::Result<(Config, FolderConfig)> {
 
     let hooks_filepath = xdg_dirs
         .find_config_file("hooks.toml")
-        // TODO dump default hook config file
         .ok_or_else(|| anyhow::anyhow!("Unable to find hooks file"))?;
     log::debug!("Hooks filepath: {:?}", hooks_filepath);
 
