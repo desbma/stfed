@@ -1,6 +1,6 @@
 [Unit]
 Description=Syncthing Folder Event Daemon
-BindsTo=syncthing.service
+PartOf=syncthing.service
 After=syncthing.service
 
 [Service]
