@@ -4,6 +4,7 @@ use std::collections::{
     hash_map::{Entry, HashMap},
     HashSet,
 };
+use std::io;
 use std::path::Path;
 use std::sync::{mpsc, Arc, Mutex};
 use std::thread;
@@ -52,68 +53,90 @@ fn main() -> anyhow::Result<()> {
 
     loop {
         // Setup client
-        let client = syncthing::SyncthingClient::new(&cfg)?;
+        let client_res = syncthing::SyncthingClient::new(&cfg);
+        match client_res {
+            Ok(client) => {
+                // Event loop
+                for event in client.iter_events() {
+                    // Handle special events
+                    let event = match event {
+                        Err(ref err) => {
+                            if let Some(err) = err.downcast_ref::<syncthing::ServerGone>() {
+                                log::warn!(
+                                    "Syncthing server is gone, will restart main loop. {:?}",
+                                    err
+                                );
+                                break;
+                            } else if let Some(err) =
+                                err.downcast_ref::<syncthing::ServerConfigChanged>()
+                            {
+                                log::warn!(
+                                    "Syncthing server configuration changed, will restart main loop. {:?}",
+                                    err
+                                );
+                                break;
+                            } else {
+                                event?;
+                            }
+                            unreachable!();
+                        }
+                        Ok(event) => event,
+                    };
+                    log::info!("New event: {:?}", event);
 
-        // Event loop
-        for event in client.iter_events() {
-            // Handle special events
-            let event = match event {
-                Err(ref err) => {
-                    if let Some(err) = err.downcast_ref::<syncthing::ServerGone>() {
-                        log::warn!(
-                            "Syncthing server is gone, will restart main loop. {:?}",
-                            err
-                        );
-                        break;
-                    } else if let Some(err) = err.downcast_ref::<syncthing::ServerConfigChanged>() {
-                        log::warn!(
-                            "Syncthing server configuration changed, will restart main loop. {:?}",
-                            err
-                        );
-                        break;
-                    } else {
-                        event?;
-                    }
-                    unreachable!();
-                }
-                Ok(event) => event,
-            };
-            log::info!("New event: {:?}", event);
-
-            // Dispatch event
-            match event {
-                syncthing::SyncthingEvent::FileDownSyncDone { path, folder } => {
-                    for hook in hooks_map
-                        .get(&(config::FolderEvent::FileDownSyncDone, &folder))
-                        .unwrap_or(&vec![])
-                    {
-                        if hook
-                            .filter
-                            .as_ref()
-                            .map(|g| g.is_match(&path))
-                            .unwrap_or(true)
-                        {
-                            hook::run(hook, Some(&path), &folder, &reaper_tx, &running_hooks)?;
+                    // Dispatch event
+                    match event {
+                        syncthing::SyncthingEvent::FileDownSyncDone { path, folder } => {
+                            for hook in hooks_map
+                                .get(&(config::FolderEvent::FileDownSyncDone, &folder))
+                                .unwrap_or(&vec![])
+                            {
+                                if hook
+                                    .filter
+                                    .as_ref()
+                                    .map(|g| g.is_match(&path))
+                                    .unwrap_or(true)
+                                {
+                                    hook::run(
+                                        hook,
+                                        Some(&path),
+                                        &folder,
+                                        &reaper_tx,
+                                        &running_hooks,
+                                    )?;
+                                }
+                            }
+                        }
+                        syncthing::SyncthingEvent::FolderDownSyncDone { folder } => {
+                            for hook in hooks_map
+                                .get(&(config::FolderEvent::FolderDownSyncDone, &folder))
+                                .unwrap_or(&vec![])
+                            {
+                                hook::run(hook, None, &folder, &reaper_tx, &running_hooks)?;
+                            }
+                        }
+                        syncthing::SyncthingEvent::FileConflict { path, folder } => {
+                            for hook in hooks_map
+                                .get(&(config::FolderEvent::FileConflict, &folder))
+                                .unwrap_or(&vec![])
+                            {
+                                hook::run(hook, Some(&path), &folder, &reaper_tx, &running_hooks)?;
+                            }
                         }
                     }
                 }
-                syncthing::SyncthingEvent::FolderDownSyncDone { folder } => {
-                    for hook in hooks_map
-                        .get(&(config::FolderEvent::FolderDownSyncDone, &folder))
-                        .unwrap_or(&vec![])
-                    {
-                        hook::run(hook, None, &folder, &reaper_tx, &running_hooks)?;
-                    }
-                }
-                syncthing::SyncthingEvent::FileConflict { path, folder } => {
-                    for hook in hooks_map
-                        .get(&(config::FolderEvent::FileConflict, &folder))
-                        .unwrap_or(&vec![])
-                    {
-                        hook::run(hook, Some(&path), &folder, &reaper_tx, &running_hooks)?;
-                    }
-                }
             }
+            Err(ref err) => match err.root_cause().downcast_ref::<io::Error>() {
+                Some(err2) if err2.kind() == io::ErrorKind::ConnectionRefused => {
+                    log::warn!(
+                        "Syncthing·server·connection failed,·will·restart·main·loop.·{:?}",
+                        err
+                    );
+                }
+                _ => {
+                    client_res?;
+                }
+            },
         }
 
         /// Delay to wait for before trying to reconnect to Synthing server
