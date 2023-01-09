@@ -8,7 +8,6 @@ use serde::de::Deserialize;
 
 /// Local configuration
 #[derive(Debug, serde::Deserialize)]
-#[serde(default)]
 pub struct Config {
     /// Syncthing base URL
     pub url: url::Url,
