@@ -110,7 +110,7 @@ where
     D: serde::Deserializer<'de>,
 {
     let s = String::deserialize(deserializer)?;
-    shlex::split(&s).ok_or_else(|| serde::de::Error::custom(format!("Invalid command: {:?}", s)))
+    shlex::split(&s).ok_or_else(|| serde::de::Error::custom(format!("Invalid command: {s:?}")))
 }
 
 /// Folder event kind
