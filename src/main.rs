@@ -129,7 +129,7 @@ fn main() -> anyhow::Result<()> {
             Err(ref err) => match err.root_cause().downcast_ref::<io::Error>() {
                 Some(err2) if err2.kind() == io::ErrorKind::ConnectionRefused => {
                     log::warn!(
-                        "Syncthing·server·connection failed,·will·restart·main·loop.·{:?}",
+                        "Syncthing server connection failed, will restart main loop. {:?}",
                         err
                     );
                 }
