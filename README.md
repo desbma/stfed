@@ -1,6 +1,7 @@
 # **S**ync**t**hing **F**older **E**vent **D**aemon (stfed)
 
 [![Build status](https://github.com/desbma/stfed/actions/workflows/ci.yml/badge.svg)](https://github.com/desbma/stfed/actions)
+[![AUR version](https://img.shields.io/aur/version/stfed.svg?style=flat)](https://aur.archlinux.org/packages/stfed/)
 [![License](https://img.shields.io/github/license/desbma/stfed.svg?style=flat)](https://github.com/desbma/stfed/blob/master/LICENSE)
 
 **S**ync**t**hing **F**older **E**vent **D**aemon, aka `stfed`, is a small companion daemon to run alongside [Syncthing](https://syncthing.net/), which allows running custom commands when certain folder events happen.
@@ -36,6 +37,10 @@ install -D -t ~/.config/systemd/user ./systemd/stfed.service
 systemctl --user daemon-reload
 systemctl --user enable --now stfed.service
 ```
+
+### From the AUR
+
+Arch Linux users can install the [stfed AUR package](https://aur.archlinux.org/packages/stfed/).
 
 ## Configuration
 
