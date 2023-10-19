@@ -2,6 +2,17 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.0.2] - 2023-10-19
+
+### Bug Fixes
+
+- Error message spacing chars
+
+### Miscellaneous Tasks
+
+- Lint
+- Version 1.0.2
+
 ## [1.0.1] - 2023-01-10
 
 ### Bug Fixes
