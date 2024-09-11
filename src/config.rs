@@ -38,7 +38,8 @@ impl Config {
         let xdg_dirs = xdg::BaseDirectories::with_prefix("syncthing")
             .context("Unable fo find Synthing config directory")?;
         let st_config_filepath = xdg_dirs
-            .find_config_file("config.xml")
+            .find_state_file("config.xml")
+            .or_else(|| xdg_dirs.find_config_file("config.xml"))
             .context("Unable fo find Synthing config file")?;
         log::debug!("Found Syncthing config in {:?}", st_config_filepath);
         let st_config_xml = fs::read_to_string(st_config_filepath)?;
