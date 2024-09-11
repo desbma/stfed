@@ -1,6 +1,6 @@
 //! Syncthing types, taken from https://github.com/JayceFayne/syncthing-rs/blob/e5981950d59c210a380c0665a4e7a4b44f7ce37f/src/rest/events.rs, with some additional fixes
 
-#![allow(clippy::missing_docs_in_private_items)]
+#![allow(dead_code, clippy::missing_docs_in_private_items)]
 
 use std::collections::HashMap;
 use std::convert::TryFrom;
