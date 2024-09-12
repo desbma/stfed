@@ -1,10 +1,13 @@
 //! Code to run hooks commands
 
-use std::collections::HashSet;
-use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
-use std::sync::{mpsc, Arc, Mutex};
-use std::time::Duration;
+use std::{
+    collections::HashSet,
+    path::{Path, PathBuf},
+    process::{Child, Command, Stdio},
+    ptr,
+    sync::{mpsc, Arc, Mutex},
+    time::Duration,
+};
 
 use crate::config;
 
@@ -18,7 +21,7 @@ pub struct FolderHookId {
 impl FolderHookId {
     /// Create unique identifier for hook
     pub fn from_hook(hook: &config::FolderHook) -> FolderHookId {
-        let val = (hook as *const config::FolderHook) as usize;
+        let val = ptr::from_ref(hook) as usize;
         FolderHookId { val }
     }
 }
@@ -64,7 +67,7 @@ pub fn run(
 
 /// Reaper thread function, that waits for started processes
 pub fn reaper(
-    rx: mpsc::Receiver<(FolderHookId, Child)>,
+    rx: &mpsc::Receiver<(FolderHookId, Child)>,
     running_hooks: &Arc<Mutex<HashSet<FolderHookId>>>,
 ) -> anyhow::Result<()> {
     let mut watched = Vec::new();
@@ -75,7 +78,7 @@ pub fn reaper(
             let new = rx.recv()?;
             watched.push(new);
         } else if let Ok(new) = rx.recv_timeout(REAPER_WAIT_DELAY) {
-            watched.push(new)
+            watched.push(new);
         }
         loop {
             let mut do_loop = false;

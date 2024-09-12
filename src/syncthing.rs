@@ -1,12 +1,13 @@
 //! Syncthing related code
 
-use std::collections::hash_map::{Entry, HashMap};
-use std::io;
-use std::path::PathBuf;
-use std::time::Duration;
+use std::{
+    collections::hash_map::{Entry, HashMap},
+    io,
+    path::PathBuf,
+    time::Duration,
+};
 
-use crate::config;
-use crate::syncthing_rest;
+use crate::{config, syncthing_rest};
 
 /// Error when server vanished
 #[derive(thiserror::Error, Debug)]
@@ -26,7 +27,7 @@ pub enum ServerConfigChanged {
 }
 
 /// Syncthing client used to interact with the Syncthing REST API
-pub struct SyncthingClient {
+pub struct Client {
     /// Syncthing URL
     base_url: url::Url,
     /// API key
@@ -44,9 +45,9 @@ const REST_TIMEOUT: Duration = Duration::from_secs(10);
 /// Header key value for Synthing API key
 const HEADER_API_KEY: &str = "X-API-Key";
 
-impl SyncthingClient {
+impl Client {
     /// Constructor
-    pub fn new(cfg: &config::Config) -> anyhow::Result<SyncthingClient> {
+    pub fn new(cfg: &config::Config) -> anyhow::Result<Client> {
         // Build session
         let session = ureq::AgentBuilder::new()
             .timeout_connect(REST_TIMEOUT)
@@ -60,7 +61,7 @@ impl SyncthingClient {
             .build();
 
         // Get system config to build folder map
-        let base_url = cfg.url.to_owned();
+        let base_url = cfg.url.clone();
         let url = base_url.join("rest/system/config")?;
         log::debug!("GET {:?}", url);
         let json_str = session
@@ -82,22 +83,22 @@ impl SyncthingClient {
         Ok(Self {
             base_url,
             session,
-            api_key: cfg.api_key.to_owned(),
+            api_key: cfg.api_key.clone(),
             folder_map,
         })
     }
 
     /// Iterator over infinite stream of events
-    pub fn iter_events(&self) -> SyncthingFolderEventIterator {
-        SyncthingFolderEventIterator::new(self)
+    pub fn iter_events(&self) -> FolderEventIterator {
+        FolderEventIterator::new(self)
     }
 
     /// Get a single event, no filtering is done at this level
     fn event(&self, since: u64, evt_types: &[&str]) -> anyhow::Result<syncthing_rest::Event> {
         // See https://docs.syncthing.net/dev/events.html
-        let mut url = self.base_url.to_owned();
+        let mut url = self.base_url.clone();
         url.path_segments_mut()
-            .map_err(|_| anyhow::anyhow!("Invalid URL {}", self.base_url))?
+            .map_err(|()| anyhow::anyhow!("Invalid URL {}", self.base_url))?
             .push("rest")
             .push("events");
         url.query_pairs_mut()
@@ -133,18 +134,18 @@ impl SyncthingClient {
 }
 
 /// Iterator of Syncthing events
-pub struct SyncthingFolderEventIterator<'a> {
+pub struct FolderEventIterator<'a> {
     /// API client
-    client: &'a SyncthingClient,
+    client: &'a Client,
     /// Last event id
     last_id: u64,
     /// Last state change for folder to avoid duplicates
     folder_state_change_time: HashMap<String, String>,
 }
 
-impl<'a> SyncthingFolderEventIterator<'a> {
+impl<'a> FolderEventIterator<'a> {
     /// Constructor
-    fn new(client: &'a SyncthingClient) -> SyncthingFolderEventIterator {
+    fn new(client: &'a Client) -> FolderEventIterator {
         Self {
             client,
             last_id: 0,
@@ -153,8 +154,8 @@ impl<'a> SyncthingFolderEventIterator<'a> {
     }
 }
 
-impl Iterator for SyncthingFolderEventIterator<'_> {
-    type Item = anyhow::Result<SyncthingEvent>;
+impl Iterator for FolderEventIterator<'_> {
+    type Item = anyhow::Result<Event>;
 
     fn next(&mut self) -> Option<Self::Item> {
         loop {
@@ -183,7 +184,7 @@ impl Iterator for SyncthingFolderEventIterator<'_> {
                                 .folder_map
                                 .get(&evt_data.folder)
                                 .expect("Unknown folder id");
-                            Some(Ok(SyncthingEvent::FileDownSyncDone {
+                            Some(Ok(Event::FileDownSyncDone {
                                 path: PathBuf::from(evt_data.item),
                                 folder: folder_path.to_owned(),
                             }))
@@ -211,7 +212,7 @@ impl Iterator for SyncthingFolderEventIterator<'_> {
                                 .folder_map
                                 .get(&evt_data.folder)
                                 .expect("Unknown folder id");
-                            Some(Ok(SyncthingEvent::FolderDownSyncDone {
+                            Some(Ok(Event::FolderDownSyncDone {
                                 folder: folder_path.to_owned(),
                             }))
                         }
@@ -226,7 +227,7 @@ impl Iterator for SyncthingFolderEventIterator<'_> {
                                     .folder_map
                                     .get(&evt_data.folder)
                                     .expect("Unknown folder id");
-                                Some(Ok(SyncthingEvent::FileConflict {
+                                Some(Ok(Event::FileConflict {
                                     path: PathBuf::from(evt_data.path),
                                     folder: folder_path.to_owned(),
                                 }))
@@ -248,10 +249,10 @@ impl Iterator for SyncthingFolderEventIterator<'_> {
     }
 }
 
-/// Syncthing event, see config::FolderEvent for meaning of each event
+/// Syncthing event, see `config::FolderEvent` for meaning of each event
 #[allow(clippy::missing_docs_in_private_items)]
 #[derive(Debug)]
-pub enum SyncthingEvent {
+pub enum Event {
     FileDownSyncDone { path: PathBuf, folder: PathBuf },
     FolderDownSyncDone { folder: PathBuf },
     FileConflict { path: PathBuf, folder: PathBuf },

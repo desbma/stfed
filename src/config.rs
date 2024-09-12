@@ -1,7 +1,6 @@
 //! Local configuration
 
-use std::fs;
-use std::path::PathBuf;
+use std::{fs, path::PathBuf};
 
 use anyhow::Context;
 use serde::de::Deserialize;
@@ -65,6 +64,7 @@ impl Default for Config {
 }
 
 /// Folder hooks configurations
+#[allow(clippy::module_name_repetitions)]
 #[derive(Debug, serde::Deserialize)]
 pub struct FolderConfig {
     /// Hooks array
@@ -105,7 +105,7 @@ where
     .map_or(Ok(None), |v| v.map(Some))
 }
 
-/// Deserialize command string into a vec directly usable by std::Command
+/// Deserialize command string into a vec directly usable by `std::Command`
 fn deserialize_command<'de, D>(deserializer: D) -> Result<Vec<String>, D::Error>
 where
     D: serde::Deserializer<'de>,
@@ -127,7 +127,7 @@ pub enum FolderEvent {
 }
 
 /// Parse local configuration
-pub fn parse_config() -> anyhow::Result<(Config, FolderConfig)> {
+pub fn parse() -> anyhow::Result<(Config, FolderConfig)> {
     let binary_name = env!("CARGO_PKG_NAME");
     let xdg_dirs = xdg::BaseDirectories::with_prefix(binary_name)?;
     let config_filepath = xdg_dirs.find_config_file("config.toml");
@@ -135,7 +135,7 @@ pub fn parse_config() -> anyhow::Result<(Config, FolderConfig)> {
     let config = if let Some(config_filepath) = config_filepath {
         log::debug!("Config filepath: {:?}", config_filepath);
 
-        let toml_data = std::fs::read_to_string(config_filepath)?;
+        let toml_data = fs::read_to_string(config_filepath)?;
         log::trace!("Config data: {:?}", toml_data);
 
         toml::from_str(&toml_data)?
@@ -151,7 +151,7 @@ pub fn parse_config() -> anyhow::Result<(Config, FolderConfig)> {
         .ok_or_else(|| anyhow::anyhow!("Unable to find hooks file"))?;
     log::debug!("Hooks filepath: {:?}", hooks_filepath);
 
-    let toml_data = std::fs::read_to_string(hooks_filepath)?;
+    let toml_data = fs::read_to_string(hooks_filepath)?;
     log::trace!("Hooks data: {:?}", toml_data);
     let hooks = toml::from_str(&toml_data)?;
 
