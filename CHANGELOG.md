@@ -2,6 +2,24 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.0.3] - 2024-09-12
+
+### Bug Fixes
+
+- Update for new possible Syncthing config dir
+
+### Documentation
+
+- Add AUR reference
+
+### Miscellaneous Tasks
+
+- Bump simple_logger dependency
+- Update dependencies
+- Lint
+- Add more clippy lints
+- Version 1.0.3
+
 ## [1.0.2] - 2023-10-19
 
 ### Bug Fixes
