@@ -4,6 +4,7 @@ use std::{
     collections::hash_map::{Entry, HashMap},
     io,
     path::PathBuf,
+    sync::LazyLock,
     time::Duration,
 };
 
@@ -38,10 +39,13 @@ pub struct Client {
     folder_map: HashMap<String, PathBuf>,
 }
 
+/// API timeout for long event requests
+const REST_TIMEOUT_EVENT_STREAM: Duration = Duration::from_secs(60 * 60);
+/// HTTP timeout for normal requests
+const HTTP_TIMEOUT: Duration = Duration::from_secs(10);
 /// HTTP timeout for long event requests
-const EVENT_STREAM_TIMEOUT: Duration = Duration::from_secs(60 * 60);
-/// HTTP timeout for other requests
-const REST_TIMEOUT: Duration = Duration::from_secs(10);
+static HTTP_TIMEOUT_EVENT_STREAM: LazyLock<Duration> =
+    LazyLock::new(|| REST_TIMEOUT_EVENT_STREAM + HTTP_TIMEOUT);
 /// Header key value for Synthing API key
 const HEADER_API_KEY: &str = "X-API-Key";
 
@@ -50,9 +54,9 @@ impl Client {
     pub fn new(cfg: &config::Config) -> anyhow::Result<Client> {
         // Build session
         let session = ureq::AgentBuilder::new()
-            .timeout_connect(REST_TIMEOUT)
-            .timeout_read(EVENT_STREAM_TIMEOUT)
-            .timeout_write(REST_TIMEOUT)
+            .timeout_connect(HTTP_TIMEOUT)
+            .timeout_read(*HTTP_TIMEOUT_EVENT_STREAM)
+            .timeout_write(HTTP_TIMEOUT)
             .user_agent(&format!(
                 "{}/{}",
                 env!("CARGO_PKG_NAME"),
@@ -66,7 +70,7 @@ impl Client {
         log::debug!("GET {:?}", url);
         let json_str = session
             .get(url.as_ref())
-            .timeout(REST_TIMEOUT)
+            .timeout(HTTP_TIMEOUT)
             .set(HEADER_API_KEY, &cfg.api_key)
             .call()?
             .into_string()?;
@@ -106,7 +110,7 @@ impl Client {
             .append_pair("limit", "1")
             .append_pair("events", &evt_types.join(","));
         url.query_pairs_mut()
-            .append_pair("timeout", &EVENT_STREAM_TIMEOUT.as_secs().to_string());
+            .append_pair("timeout", &REST_TIMEOUT_EVENT_STREAM.as_secs().to_string());
         loop {
             log::debug!("GET {:?}", url.to_string());
             let response = self
