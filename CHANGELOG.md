@@ -2,6 +2,16 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.0.4] - 2024-09-29
+
+### Bug Fixes
+
+- Http timeout firing before API timeout
+
+### Miscellaneous Tasks
+
+- Version 1.0.4
+
 ## [1.0.3] - 2024-09-12
 
 ### Bug Fixes
