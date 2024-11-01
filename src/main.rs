@@ -7,7 +7,7 @@ use std::{
     },
     io,
     path::Path,
-    sync::{mpsc, Arc, Mutex},
+    sync::{mpsc, Arc, LazyLock, Mutex},
     thread,
     time::Duration,
 };
@@ -21,6 +21,13 @@ mod syncthing_rest;
 
 /// Delay to wait for before trying to reconnect to Synthing server
 const RECONNECT_DELAY: Duration = Duration::from_secs(5);
+
+/// Glob matcher for a conflict file
+static CONFLICT_MATCHER: LazyLock<globset::GlobMatcher> = LazyLock::new(|| {
+    globset::Glob::new("*.sync-conflict-*")
+        .unwrap()
+        .compile_matcher()
+});
 
 #[allow(clippy::too_many_lines)]
 fn main() -> anyhow::Result<()> {
@@ -97,6 +104,20 @@ fn main() -> anyhow::Result<()> {
                                 .unwrap_or(&vec![])
                             {
                                 if hook.filter.as_ref().map_or(true, |g| g.is_match(path)) {
+                                    hook::run(
+                                        hook,
+                                        Some(path),
+                                        folder,
+                                        &reaper_tx,
+                                        &running_hooks,
+                                    )?;
+                                }
+                            }
+                            for hook in hooks_map
+                                .get(&(config::FolderEvent::RemoteFileConflict, folder))
+                                .unwrap_or(&vec![])
+                            {
+                                if CONFLICT_MATCHER.is_match(path) {
                                     hook::run(
                                         hook,
                                         Some(path),

@@ -76,7 +76,8 @@ folder = "/absolute/path/of/the/folder"
 # Event type, one of:
 # file_down_sync_done: triggers when a file has been fully synchronized locally (see filter to match for a specific file)
 # folder_down_sync_done: triggers when a folder has been fully synchronized locally
-# file_conflict: triggers when Syncthing creates a .stconflict file due to a synchronization conflict
+# file_conflict: triggers when Syncthing creates a conflict file due to a local synchronization conflict
+# remote_file_conflict: triggers when Syncthing creates a conflict file due to a remote synchronization conflict
 event = "file_down_sync_done"
 
 # glob rule for specific file matching for file_down_sync_done events

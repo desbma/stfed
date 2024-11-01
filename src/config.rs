@@ -122,8 +122,10 @@ pub enum FolderEvent {
     FolderDownSyncDone,
     /// A file has been synced down
     FileDownSyncDone,
-    /// A conflict file has been created
+    /// A conflict has occured locally
     FileConflict,
+    /// A conflict has occured remotely
+    RemoteFileConflict,
 }
 
 /// Parse local configuration
