@@ -53,6 +53,7 @@ impl Config {
 
 impl Default for Config {
     fn default() -> Self {
+        #[expect(clippy::unwrap_used)]
         Self::default_from_syncthing_config()
             .context(format!(
                 "Unable to guess {} configuration field values from Synthing config, \
@@ -64,7 +65,7 @@ impl Default for Config {
 }
 
 /// Folder hooks configurations
-#[allow(clippy::module_name_repetitions)]
+#[expect(clippy::module_name_repetitions)]
 #[derive(Debug, serde::Deserialize)]
 pub struct FolderConfig {
     /// Hooks array

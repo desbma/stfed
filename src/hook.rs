@@ -79,8 +79,7 @@ pub fn reaper(
         }
         loop {
             let mut do_loop = false;
-            for i in 0..watched.len() {
-                let (hook_id, child) = watched.get_mut(i).unwrap();
+            for (i, (hook_id, child)) in watched.iter_mut().enumerate() {
                 if let Some(rc) = child.try_wait()? {
                     log::info!("Process exited with code {:?}", rc.code());
                     {

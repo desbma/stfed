@@ -24,12 +24,13 @@ const RECONNECT_DELAY: Duration = Duration::from_secs(5);
 
 /// Glob matcher for a conflict file
 static CONFLICT_MATCHER: LazyLock<globset::GlobMatcher> = LazyLock::new(|| {
+    #[expect(clippy::unwrap_used)]
     globset::Glob::new("*.sync-conflict-*")
         .unwrap()
         .compile_matcher()
 });
 
-#[allow(clippy::too_many_lines)]
+#[expect(clippy::too_many_lines)]
 fn main() -> anyhow::Result<()> {
     // Init logger
     simple_logger::SimpleLogger::new()
@@ -147,7 +148,7 @@ fn main() -> anyhow::Result<()> {
                     }
                 }
             }
-            #[allow(clippy::ref_patterns)]
+            #[expect(clippy::ref_patterns)]
             Err(ref err) => match err.root_cause().downcast_ref::<io::Error>() {
                 Some(err2) if err2.kind() == io::ErrorKind::ConnectionRefused => {
                     log::warn!(

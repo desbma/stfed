@@ -254,7 +254,7 @@ impl Iterator for FolderEventIterator<'_> {
 }
 
 /// Syncthing event, see `config::FolderEvent` for meaning of each event
-#[allow(clippy::missing_docs_in_private_items)]
+#[expect(clippy::missing_docs_in_private_items)]
 #[derive(Debug)]
 pub enum Event {
     FileDownSyncDone { path: PathBuf, folder: PathBuf },
