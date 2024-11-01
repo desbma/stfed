@@ -11,18 +11,15 @@ use std::{
 
 use crate::config;
 
-/// Unique identified for a folder hook
+/// Unique identifier for a folder hook
 #[derive(Clone, Eq, Hash, PartialEq)]
-pub struct FolderHookId {
-    /// Pointer value
-    val: usize,
-}
+pub struct FolderHookId(usize);
 
 impl FolderHookId {
     /// Create unique identifier for hook
-    pub fn from_hook(hook: &config::FolderHook) -> FolderHookId {
+    pub fn from_hook(hook: &config::FolderHook) -> Self {
         let val = ptr::from_ref(hook) as usize;
-        FolderHookId { val }
+        Self(val)
     }
 }
 
