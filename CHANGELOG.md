@@ -2,6 +2,22 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.1.0] - 2024-11-06
+
+### Features
+
+- Support remote file conflict hook
+
+### Miscellaneous Tasks
+
+- Enable more lints
+- Update release script
+- Version 1.1.0
+
+### Refactor
+
+- Simplify FolderHookId type
+
 ## [1.0.4] - 2024-09-29
 
 ### Bug Fixes
