@@ -103,7 +103,7 @@ where
             .map(|g| g.compile_matcher())
             .map_err(serde::de::Error::custom)
     })
-    .map_or(Ok(None), |v| v.map(Some))
+    .transpose()
 }
 
 /// Deserialize command string into a vec directly usable by `std::Command`
