@@ -149,7 +149,7 @@ pub struct FolderEventIterator<'a> {
 
 impl<'a> FolderEventIterator<'a> {
     /// Constructor
-    fn new(client: &'a Client) -> FolderEventIterator {
+    fn new(client: &'a Client) -> Self {
         Self {
             client,
             last_id: 0,
