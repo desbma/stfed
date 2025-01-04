@@ -55,11 +55,13 @@ impl Default for Config {
     fn default() -> Self {
         #[expect(clippy::unwrap_used)]
         Self::default_from_syncthing_config()
-            .context(format!(
-                "Unable to guess {} configuration field values from Synthing config, \
+            .with_context(|| {
+                format!(
+                    "Unable to guess {} configuration field values from Synthing config, \
                  please write a config file",
-                env!("CARGO_PKG_NAME")
-            ))
+                    env!("CARGO_PKG_NAME")
+                )
+            })
             .unwrap()
     }
 }
