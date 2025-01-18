@@ -6,13 +6,14 @@ use std::{
         HashSet,
     },
     io,
-    path::Path,
+    rc::Rc,
     sync::{mpsc, Arc, LazyLock, Mutex},
     thread,
     time::Duration,
 };
 
 use anyhow::Context as _;
+use config::NormalizedPath;
 
 mod config;
 mod hook;
@@ -41,10 +42,10 @@ fn main() -> anyhow::Result<()> {
     let (cfg, hooks) = config::parse().context("Failed to read local config")?;
 
     // Build hook map for fast matching
-    let mut hooks_map: HashMap<(config::FolderEvent, &Path), Vec<config::FolderHook>> =
+    let mut hooks_map: HashMap<(config::FolderEvent, Rc<NormalizedPath>), Vec<config::FolderHook>> =
         HashMap::new();
     for hook in &hooks.hooks {
-        match hooks_map.entry((hook.event.clone(), &hook.folder)) {
+        match hooks_map.entry((hook.event.clone(), Rc::new(hook.folder.clone()))) {
             Entry::Occupied(mut e) => {
                 e.get_mut().push(hook.clone());
             }
@@ -100,29 +101,30 @@ fn main() -> anyhow::Result<()> {
                     // Dispatch event
                     match event {
                         syncthing::Event::FileDownSyncDone { path, folder } => {
+                            let folder: Rc<NormalizedPath> = Rc::new(folder.as_path().try_into()?);
                             for hook in hooks_map
-                                .get(&(config::FolderEvent::FileDownSyncDone, folder))
+                                .get(&(config::FolderEvent::FileDownSyncDone, Rc::clone(&folder)))
                                 .unwrap_or(&vec![])
                             {
                                 if hook.filter.as_ref().map_or(true, |g| g.is_match(path)) {
                                     hook::run(
                                         hook,
                                         Some(path),
-                                        folder,
+                                        (*folder).as_ref(),
                                         &reaper_tx,
                                         &running_hooks,
                                     )?;
                                 }
                             }
                             for hook in hooks_map
-                                .get(&(config::FolderEvent::RemoteFileConflict, folder))
+                                .get(&(config::FolderEvent::RemoteFileConflict, Rc::clone(&folder)))
                                 .unwrap_or(&vec![])
                             {
                                 if CONFLICT_MATCHER.is_match(path) {
                                     hook::run(
                                         hook,
                                         Some(path),
-                                        folder,
+                                        (*folder).as_ref(),
                                         &reaper_tx,
                                         &running_hooks,
                                     )?;
@@ -130,19 +132,33 @@ fn main() -> anyhow::Result<()> {
                             }
                         }
                         syncthing::Event::FolderDownSyncDone { folder } => {
+                            let folder: Rc<NormalizedPath> = Rc::new(folder.as_path().try_into()?);
                             for hook in hooks_map
-                                .get(&(config::FolderEvent::FolderDownSyncDone, folder))
+                                .get(&(config::FolderEvent::FolderDownSyncDone, Rc::clone(&folder)))
                                 .unwrap_or(&vec![])
                             {
-                                hook::run(hook, None, folder, &reaper_tx, &running_hooks)?;
+                                hook::run(
+                                    hook,
+                                    None,
+                                    (*folder).as_ref(),
+                                    &reaper_tx,
+                                    &running_hooks,
+                                )?;
                             }
                         }
                         syncthing::Event::FileConflict { path, folder } => {
+                            let folder: Rc<NormalizedPath> = Rc::new(folder.as_path().try_into()?);
                             for hook in hooks_map
-                                .get(&(config::FolderEvent::FileConflict, folder))
+                                .get(&(config::FolderEvent::FileConflict, Rc::clone(&folder)))
                                 .unwrap_or(&vec![])
                             {
-                                hook::run(hook, Some(path), folder, &reaper_tx, &running_hooks)?;
+                                hook::run(
+                                    hook,
+                                    Some(path),
+                                    (*folder).as_ref(),
+                                    &reaper_tx,
+                                    &running_hooks,
+                                )?;
                             }
                         }
                     }

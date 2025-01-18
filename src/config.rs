@@ -1,9 +1,13 @@
 //! Local configuration
 
-use std::{fs, path::PathBuf};
+use std::{
+    fs, io,
+    path::{Path, PathBuf},
+};
 
 use anyhow::Context as _;
 use serde::de::Deserialize as _;
+use simple_expand_tilde::expand_tilde;
 
 /// Local configuration
 #[derive(Debug, serde::Deserialize)]
@@ -73,11 +77,31 @@ pub(crate) struct FolderConfig {
     pub hooks: Vec<FolderHook>,
 }
 
+#[derive(Clone, Debug, Hash, PartialEq, Eq, serde::Deserialize)]
+pub(crate) struct NormalizedPath(PathBuf);
+
+impl TryFrom<&Path> for NormalizedPath {
+    type Error = io::Error;
+
+    fn try_from(path: &Path) -> Result<Self, Self::Error> {
+        let path = expand_tilde(path)
+            .ok_or_else(|| io::Error::other("User not found"))?
+            .canonicalize()?;
+        Ok(Self(path))
+    }
+}
+
+impl AsRef<Path> for NormalizedPath {
+    fn as_ref(&self) -> &Path {
+        self.0.as_path()
+    }
+}
+
 /// Configuration for a folder hook
 #[derive(Clone, Debug, serde::Deserialize)]
 pub(crate) struct FolderHook {
     /// Absolute path of the folder
-    pub folder: PathBuf,
+    pub folder: NormalizedPath,
     /// Event to hook
     pub event: FolderEvent,
     /// Event filter

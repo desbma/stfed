@@ -79,7 +79,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cbf2150cce219b664a8a70df7a1f933836724b503f8a413af9365b4dcc4d90b8"
 dependencies = [
  "lazy_static",
- "windows-sys",
+ "windows-sys 0.48.0",
 ]
 
 [[package]]
@@ -452,6 +452,24 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0fda2ff0d084019ba4d7c6f371c95d8fd75ce3524c3cb8fb653a3023f6323e64"
 
 [[package]]
+name = "simple-expand-tilde"
+version = "0.4.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "082c932448e7db87dc9222706818d95e0f4635a0ab293a748a577c2b4f01c197"
+dependencies = [
+ "simple-home-dir",
+]
+
+[[package]]
+name = "simple-home-dir"
+version = "0.4.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cd988c122a92006d24f347b3cbba965d5558e0ce94659fa7f0b6074e48641913"
+dependencies = [
+ "windows-sys 0.59.0",
+]
+
+[[package]]
 name = "simple_logger"
 version = "5.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -459,7 +477,7 @@ checksum = "e8c5dfa5e08767553704aa0ffd9d9794d527103c736aba9854773851fd7497eb"
 dependencies = [
  "colored",
  "log",
- "windows-sys",
+ "windows-sys 0.48.0",
 ]
 
 [[package]]
@@ -485,6 +503,7 @@ dependencies = [
  "serde",
  "serde_json",
  "shlex",
+ "simple-expand-tilde",
  "simple_logger",
  "thiserror",
  "toml",
@@ -628,6 +647,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "677d2418bec65e3338edb076e806bc1ec15693c5d0104683f2efe857f61056a9"
 dependencies = [
  "windows-targets 0.48.5",
+]
+
+[[package]]
+name = "windows-sys"
+version = "0.59.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1e38bc4d79ed67fd075bcc251a1c39b32a1776bbe92e5bef1f0bf1f8c531853b"
+dependencies = [
+ "windows-targets 0.52.6",
 ]
 
 [[package]]
