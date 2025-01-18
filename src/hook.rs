@@ -13,18 +13,18 @@ use crate::config;
 
 /// Unique identifier for a folder hook
 #[derive(Clone, Eq, Hash, PartialEq)]
-pub struct FolderHookId(usize);
+pub(crate) struct FolderHookId(usize);
 
 impl FolderHookId {
     /// Create unique identifier for hook
-    pub fn from_hook(hook: &config::FolderHook) -> Self {
+    pub(crate) fn from_hook(hook: &config::FolderHook) -> Self {
         let val = ptr::from_ref(hook) as usize;
         Self(val)
     }
 }
 
 /// Run a given hook for a given path/folder
-pub fn run(
+pub(crate) fn run(
     hook: &config::FolderHook,
     path: Option<&Path>,
     folder: &Path,
@@ -63,7 +63,7 @@ pub fn run(
 }
 
 /// Reaper thread function, that waits for started processes
-pub fn reaper(
+pub(crate) fn reaper(
     rx: &mpsc::Receiver<(FolderHookId, Child)>,
     running_hooks: &Arc<Mutex<HashSet<FolderHookId>>>,
 ) -> anyhow::Result<()> {

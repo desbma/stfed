@@ -21,7 +21,7 @@ type Folder = HashMap<FileName, File>;
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all(deserialize = "camelCase"))]
-pub struct File {
+pub(crate) struct File {
     pub total: u64,
     pub pulling: u64,
     pub copied_from_origin: u64,
@@ -33,13 +33,13 @@ pub struct File {
 }
 
 #[derive(Debug, Deserialize)]
-pub struct ConfigSavedEvent {
+pub(crate) struct ConfigSavedEvent {
     pub version: u64,
 }
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all(deserialize = "camelCase"))]
-pub struct DeviceConnectedEvent {
+pub(crate) struct DeviceConnectedEvent {
     pub addr: String,
     #[serde(rename = "id")]
     pub device_id: DeviceID,
@@ -51,27 +51,27 @@ pub struct DeviceConnectedEvent {
 }
 
 #[derive(Debug, Deserialize)]
-pub struct DeviceDisconnectedEvent {
+pub(crate) struct DeviceDisconnectedEvent {
     #[serde(rename = "id")]
     pub device_id: DeviceID,
     pub error: String,
 }
 
 #[derive(Debug, Deserialize)]
-pub struct DeviceDiscoveredEvent {
+pub(crate) struct DeviceDiscoveredEvent {
     #[serde(rename = "device")]
     pub device_id: DeviceID,
     pub addrs: Vec<String>,
 }
 
 #[derive(Debug, Deserialize)]
-pub struct DevicePausedEvent {
+pub(crate) struct DevicePausedEvent {
     #[serde(rename = "device")]
     pub device_id: DeviceID,
 }
 
 #[derive(Debug, Deserialize)]
-pub struct DeviceRejectedEvent {
+pub(crate) struct DeviceRejectedEvent {
     #[serde(rename = "device")]
     pub device_id: DeviceID,
     pub name: String,
@@ -79,14 +79,14 @@ pub struct DeviceRejectedEvent {
 }
 
 #[derive(Debug, Deserialize)]
-pub struct DeviceResumedEvent {
+pub(crate) struct DeviceResumedEvent {
     #[serde(rename = "device")]
     pub device_id: DeviceID,
 }
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all(deserialize = "camelCase"))]
-pub struct FolderCompletionEvent {
+pub(crate) struct FolderCompletionEvent {
     #[serde(rename = "device")]
     pub device_id: DeviceID,
     #[serde(rename = "folder")]
@@ -99,19 +99,19 @@ pub struct FolderCompletionEvent {
 }
 
 #[derive(Debug, Deserialize)]
-pub struct FolderErrorsEvent {
+pub(crate) struct FolderErrorsEvent {
     pub folder: String,
     pub errors: Vec<FolderError>,
 }
 
 #[derive(Debug, Deserialize)]
-pub struct FolderError {
+pub(crate) struct FolderError {
     pub error: String,
     pub path: String,
 }
 
 #[derive(Debug, Deserialize)]
-pub struct FolderRejectedEvent {
+pub(crate) struct FolderRejectedEvent {
     #[serde(rename = "device")]
     pub device_id: DeviceID,
     #[serde(rename = "folder")]
@@ -121,7 +121,7 @@ pub struct FolderRejectedEvent {
 }
 
 #[derive(Debug, Deserialize)]
-pub struct FolderScanProgressEvent {
+pub(crate) struct FolderScanProgressEvent {
     pub total: u64,
     pub rate: u64,
     pub current: u64,
@@ -130,14 +130,14 @@ pub struct FolderScanProgressEvent {
 }
 
 #[derive(Debug, Deserialize)]
-pub struct FolderSummaryEvent {
+pub(crate) struct FolderSummaryEvent {
     pub folder: String,
     pub summary: FolderSummaryData,
 }
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all(deserialize = "camelCase"))]
-pub struct FolderSummaryData {
+pub(crate) struct FolderSummaryData {
     pub global_bytes: u64,
     pub global_deleted: u64,
     pub global_directories: u64,
@@ -169,14 +169,14 @@ pub struct FolderSummaryData {
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all(deserialize = "lowercase"))]
-pub enum ItemAction {
+pub(crate) enum ItemAction {
     Update,
     Metadata,
     Delete,
 }
 
 #[derive(Debug, Deserialize)]
-pub struct ItemFinishedEvent {
+pub(crate) struct ItemFinishedEvent {
     pub item: String,
     pub folder: String,
     pub error: Option<String>,
@@ -186,7 +186,7 @@ pub struct ItemFinishedEvent {
 }
 
 #[derive(Debug, Deserialize)]
-pub struct ItemStartedEvent {
+pub(crate) struct ItemStartedEvent {
     pub item: String,
     pub folder: String,
     #[serde(rename = "type")]
@@ -195,10 +195,10 @@ pub struct ItemStartedEvent {
 }
 
 #[derive(Debug, Deserialize)]
-pub struct ListenAddressesChangedEvent {}
+pub(crate) struct ListenAddressesChangedEvent {}
 
 #[derive(Debug, Deserialize)]
-pub struct LocalChangeDetectedEvent {
+pub(crate) struct LocalChangeDetectedEvent {
     pub action: String,
     pub folder: String,
     pub label: String,
@@ -208,7 +208,7 @@ pub struct LocalChangeDetectedEvent {
 }
 
 #[derive(Debug, Deserialize)]
-pub struct LocalIndexUpdatedEvent {
+pub(crate) struct LocalIndexUpdatedEvent {
     #[serde(rename = "folder")]
     pub folder_id: String,
     pub items: u64,
@@ -217,12 +217,12 @@ pub struct LocalIndexUpdatedEvent {
 }
 
 #[derive(Debug, Deserialize)]
-pub struct LoginAttemptEvent {
+pub(crate) struct LoginAttemptEvent {
     pub username: String,
     pub success: bool,
 }
 #[derive(Debug, Deserialize)]
-pub struct RemoteChangeDetectedEvent {
+pub(crate) struct RemoteChangeDetectedEvent {
     pub action: String,
     #[serde(rename = "folderID")]
     pub folder_id: String,
@@ -235,7 +235,7 @@ pub struct RemoteChangeDetectedEvent {
 }
 
 #[derive(Debug, Deserialize)]
-pub struct RemoteDownloadProgressEvent {
+pub(crate) struct RemoteDownloadProgressEvent {
     #[serde(rename = "device")]
     pub device_id: DeviceID,
     pub folder: String,
@@ -243,7 +243,7 @@ pub struct RemoteDownloadProgressEvent {
 }
 
 #[derive(Debug, Deserialize)]
-pub struct RemoteIndexUpdatedEvent {
+pub(crate) struct RemoteIndexUpdatedEvent {
     #[serde(rename = "device")]
     pub device_id: DeviceID,
     #[serde(rename = "folder")]
@@ -253,7 +253,7 @@ pub struct RemoteIndexUpdatedEvent {
 }
 
 #[derive(Debug, Deserialize)]
-pub struct StartingEvent {
+pub(crate) struct StartingEvent {
     #[serde(rename = "myID")]
     pub device_id: DeviceID,
     pub home: String,
@@ -261,7 +261,7 @@ pub struct StartingEvent {
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all(deserialize = "kebab-case"))]
-pub enum FolderState {
+pub(crate) enum FolderState {
     Idle,
     Scanning,
     ScanWaiting,
@@ -272,7 +272,7 @@ pub enum FolderState {
 }
 
 #[derive(Debug, Deserialize)]
-pub struct StateChangedEvent {
+pub(crate) struct StateChangedEvent {
     #[serde(rename = "folder")]
     pub folder_id: String,
     pub duration: Option<f64>,
@@ -282,7 +282,7 @@ pub struct StateChangedEvent {
 }
 
 #[derive(Debug, Deserialize)]
-pub enum EventData {
+pub(crate) enum EventData {
     ConfigSaved(ConfigSavedEvent),
     DeviceConnected(DeviceConnectedEvent),
     DeviceDisconnected(DeviceDisconnectedEvent),
@@ -322,7 +322,7 @@ pub(super) struct RawEvent {
 }
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq, Deserialize, Serialize)]
-pub enum EventType {
+pub(crate) enum EventType {
     ConfigSaved,
     DeviceConnected,
     DeviceDisconnected,
@@ -352,7 +352,7 @@ pub enum EventType {
 
 #[derive(Debug, Deserialize)]
 #[serde(try_from = "RawEvent")]
-pub struct Event {
+pub(crate) struct Event {
     pub id: u64,
     pub global_id: u64,
     pub time: String,
@@ -418,12 +418,12 @@ impl TryFrom<RawEvent> for Event {
 //
 
 #[derive(serde::Deserialize)]
-pub struct SystemConfig {
+pub(crate) struct SystemConfig {
     pub folders: Vec<SystemConfigFolder>,
 }
 
 #[derive(serde::Deserialize)]
-pub struct SystemConfigFolder {
+pub(crate) struct SystemConfigFolder {
     pub path: String,
     pub id: String,
 }
@@ -433,7 +433,7 @@ pub struct SystemConfigFolder {
 //
 
 #[derive(serde::Deserialize)]
-pub struct SystemStatus {
+pub(crate) struct SystemStatus {
     #[serde(rename = "myID")]
     pub my_id: String,
 }

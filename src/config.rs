@@ -2,12 +2,12 @@
 
 use std::{fs, path::PathBuf};
 
-use anyhow::Context;
-use serde::de::Deserialize;
+use anyhow::Context as _;
+use serde::de::Deserialize as _;
 
 /// Local configuration
 #[derive(Debug, serde::Deserialize)]
-pub struct Config {
+pub(crate) struct Config {
     /// Syncthing base URL
     pub url: url::Url,
     /// Syncthing API key
@@ -67,16 +67,15 @@ impl Default for Config {
 }
 
 /// Folder hooks configurations
-#[expect(clippy::module_name_repetitions)]
 #[derive(Debug, serde::Deserialize)]
-pub struct FolderConfig {
+pub(crate) struct FolderConfig {
     /// Hooks array
     pub hooks: Vec<FolderHook>,
 }
 
 /// Configuration for a folder hook
 #[derive(Clone, Debug, serde::Deserialize)]
-pub struct FolderHook {
+pub(crate) struct FolderHook {
     /// Absolute path of the folder
     pub folder: PathBuf,
     /// Event to hook
@@ -120,7 +119,7 @@ where
 /// Folder event kind
 #[derive(Clone, Debug, Eq, Hash, PartialEq, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum FolderEvent {
+pub(crate) enum FolderEvent {
     /// A whole folder has been synced down
     FolderDownSyncDone,
     /// A file has been synced down
@@ -132,7 +131,7 @@ pub enum FolderEvent {
 }
 
 /// Parse local configuration
-pub fn parse() -> anyhow::Result<(Config, FolderConfig)> {
+pub(crate) fn parse() -> anyhow::Result<(Config, FolderConfig)> {
     let binary_name = env!("CARGO_PKG_NAME");
     let xdg_dirs = xdg::BaseDirectories::with_prefix(binary_name)?;
     let config_filepath = xdg_dirs.find_config_file("config.toml");

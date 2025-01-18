@@ -2,6 +2,7 @@
 name = "stfed"
 version = "1.1.0"
 edition = "2021"
+rust-version = "1.81"
 
 [profile.release]
 lto = true
@@ -31,14 +32,14 @@ non_ascii_idents = "deny"
 redundant-lifetimes = "warn"
 single-use-lifetimes = "warn"
 unit-bindings = "warn"
-# unreachable_pub = "warn"
+unreachable_pub = "warn"
 unused_crate_dependencies = "warn"
 unused-lifetimes = "warn"
 unused-qualifications = "warn"
 
 [lints.clippy]
 pedantic = { level = "warn", priority = -1 }
-# below lints are from clippy::restriction, and assume clippy >= 1.82
+# below lints are from clippy::restriction, and assume clippy >= 1.84
 # https://rust-lang.github.io/rust-clippy/master/index.html#/?levels=allow&groups=restriction
 allow_attributes = "warn"
 clone_on_ref_ptr = "warn"
@@ -52,10 +53,13 @@ if_then_some_else_none = "warn"
 impl_trait_in_params = "warn"
 infinite_loop = "warn"
 lossy_float_literal = "warn"
+map_with_unused_argument_over_ranges = "warn"
 missing_docs_in_private_items = "warn"
 mixed_read_write_in_expression = "warn"
+module_name_repetitions = "warn"
 multiple_inherent_impl = "warn"
 needless_raw_strings = "warn"
+non_zero_suggestions = "warn"
 panic = "warn"
 pathbuf_init_then_push = "warn"
 pub_without_shorthand = "warn"
@@ -78,5 +82,6 @@ unnecessary_safety_doc = "warn"
 unneeded_field_pattern = "warn"
 unseparated_literal_suffix = "warn"
 unused_result_ok = "warn"
+unused_trait_names = "warn"
 unwrap_used = "warn"
 verbose_file_reads = "warn"

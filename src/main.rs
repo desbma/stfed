@@ -12,7 +12,7 @@ use std::{
     time::Duration,
 };
 
-use anyhow::Context;
+use anyhow::Context as _;
 
 mod config;
 mod hook;

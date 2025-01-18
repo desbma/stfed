@@ -13,7 +13,7 @@ use crate::{config, syncthing_rest};
 /// Error when server vanished
 #[derive(thiserror::Error, Debug)]
 #[error(transparent)]
-pub struct ServerGone {
+pub(crate) struct ServerGone {
     /// Inner error
     #[from]
     inner: io::Error,
@@ -21,14 +21,14 @@ pub struct ServerGone {
 
 /// Error when server config changed
 #[derive(thiserror::Error, Debug)]
-pub enum ServerConfigChanged {
+pub(crate) enum ServerConfigChanged {
     /// Server initiated config changed notification via event
     #[error("Server sent ConfigSaved event")]
     ConfigSaved,
 }
 
 /// Syncthing client used to interact with the Syncthing REST API
-pub struct Client {
+pub(crate) struct Client {
     /// Syncthing URL
     base_url: url::Url,
     /// API key
@@ -51,7 +51,7 @@ const HEADER_API_KEY: &str = "X-API-Key";
 
 impl Client {
     /// Constructor
-    pub fn new(cfg: &config::Config) -> anyhow::Result<Client> {
+    pub(crate) fn new(cfg: &config::Config) -> anyhow::Result<Client> {
         // Build session
         let session = ureq::AgentBuilder::new()
             .timeout_connect(HTTP_TIMEOUT)
@@ -93,7 +93,7 @@ impl Client {
     }
 
     /// Iterator over infinite stream of events
-    pub fn iter_events(&self) -> FolderEventIterator {
+    pub(crate) fn iter_events(&self) -> FolderEventIterator {
         FolderEventIterator::new(self)
     }
 
@@ -138,7 +138,7 @@ impl Client {
 }
 
 /// Iterator of Syncthing events
-pub struct FolderEventIterator<'a> {
+pub(crate) struct FolderEventIterator<'a> {
     /// API client
     client: &'a Client,
     /// Last event id
@@ -256,7 +256,7 @@ impl Iterator for FolderEventIterator<'_> {
 /// Syncthing event, see `config::FolderEvent` for meaning of each event
 #[expect(clippy::missing_docs_in_private_items)]
 #[derive(Debug)]
-pub enum Event {
+pub(crate) enum Event {
     FileDownSyncDone { path: PathBuf, folder: PathBuf },
     FolderDownSyncDone { folder: PathBuf },
     FileConflict { path: PathBuf, folder: PathBuf },
