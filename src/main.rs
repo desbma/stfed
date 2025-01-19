@@ -110,7 +110,7 @@ fn main() -> anyhow::Result<()> {
                                     hook::run(
                                         hook,
                                         Some(path),
-                                        (*folder).as_ref(),
+                                        &folder,
                                         &reaper_tx,
                                         &running_hooks,
                                     )?;
@@ -124,7 +124,7 @@ fn main() -> anyhow::Result<()> {
                                     hook::run(
                                         hook,
                                         Some(path),
-                                        (*folder).as_ref(),
+                                        &folder,
                                         &reaper_tx,
                                         &running_hooks,
                                     )?;
@@ -137,13 +137,7 @@ fn main() -> anyhow::Result<()> {
                                 .get(&(config::FolderEvent::FolderDownSyncDone, Rc::clone(&folder)))
                                 .unwrap_or(&vec![])
                             {
-                                hook::run(
-                                    hook,
-                                    None,
-                                    (*folder).as_ref(),
-                                    &reaper_tx,
-                                    &running_hooks,
-                                )?;
+                                hook::run(hook, None, &folder, &reaper_tx, &running_hooks)?;
                             }
                         }
                         syncthing::Event::FileConflict { path, folder } => {
@@ -152,13 +146,7 @@ fn main() -> anyhow::Result<()> {
                                 .get(&(config::FolderEvent::FileConflict, Rc::clone(&folder)))
                                 .unwrap_or(&vec![])
                             {
-                                hook::run(
-                                    hook,
-                                    Some(path),
-                                    (*folder).as_ref(),
-                                    &reaper_tx,
-                                    &running_hooks,
-                                )?;
+                                hook::run(hook, Some(path), &folder, &reaper_tx, &running_hooks)?;
                             }
                         }
                     }

@@ -2,6 +2,7 @@
 
 use std::{
     fs, io,
+    ops::Deref,
     path::{Path, PathBuf},
 };
 
@@ -98,8 +99,10 @@ impl TryFrom<&Path> for NormalizedPath {
     }
 }
 
-impl AsRef<Path> for NormalizedPath {
-    fn as_ref(&self) -> &Path {
+impl Deref for NormalizedPath {
+    type Target = Path;
+
+    fn deref(&self) -> &Self::Target {
         self.0.as_path()
     }
 }
