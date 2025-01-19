@@ -77,8 +77,15 @@ pub(crate) struct FolderConfig {
     pub hooks: Vec<FolderHook>,
 }
 
-#[derive(Clone, Debug, Hash, PartialEq, Eq, serde::Deserialize)]
+#[derive(Clone, Debug, Hash, PartialEq, Eq)]
 pub(crate) struct NormalizedPath(PathBuf);
+
+impl<'de> serde::Deserialize<'de> for NormalizedPath {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let pb = PathBuf::deserialize(deserializer)?;
+        pb.as_path().try_into().map_err(serde::de::Error::custom)
+    }
+}
 
 impl TryFrom<&Path> for NormalizedPath {
     type Error = io::Error;
