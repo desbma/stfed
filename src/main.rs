@@ -35,6 +35,7 @@ static CONFLICT_MATCHER: LazyLock<globset::GlobMatcher> = LazyLock::new(|| {
 fn main() -> anyhow::Result<()> {
     // Init logger
     simple_logger::SimpleLogger::new()
+        .env()
         .init()
         .context("Failed to init logger")?;
 
