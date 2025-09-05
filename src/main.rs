@@ -107,7 +107,7 @@ fn main() -> anyhow::Result<()> {
                                 .get(&(config::FolderEvent::FileDownSyncDone, Rc::clone(&folder)))
                                 .unwrap_or(&vec![])
                             {
-                                if hook.filter.as_ref().map_or(true, |g| g.is_match(path)) {
+                                if hook.filter.as_ref().is_none_or(|g| g.is_match(path)) {
                                     hook::run(
                                         hook,
                                         Some(path),

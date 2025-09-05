@@ -93,7 +93,7 @@ impl Client {
     }
 
     /// Iterator over infinite stream of events
-    pub(crate) fn iter_events(&self) -> FolderEventIterator {
+    pub(crate) fn iter_events(&self) -> FolderEventIterator<'_> {
         FolderEventIterator::new(self)
     }
 
