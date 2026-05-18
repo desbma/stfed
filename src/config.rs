@@ -78,6 +78,7 @@ pub(crate) struct FolderConfig {
     pub hooks: Vec<FolderHook>,
 }
 
+/// Path string with ~ replaced, and canonicalized
 #[derive(Clone, Debug, Hash, PartialEq, Eq)]
 pub(crate) struct NormalizedPath(PathBuf);
 
