@@ -230,6 +230,14 @@ impl Iterator for FolderEventIterator<'_> {
 
                     match new_evt.data {
                         syncthing_rest::EventData::ItemFinished(evt_data) => {
+                            // The event is also emitted for failed syncs, deletions and
+                            // metadata changes: only a successful content update means a
+                            // file was synced down
+                            if evt_data.error.is_some()
+                                || !matches!(evt_data.action, syncthing_rest::ItemAction::Update)
+                            {
+                                continue;
+                            }
                             let folder_path = self
                                 .client
                                 .folder_map
@@ -441,5 +449,59 @@ mod tests {
         assert!(requests[1].contains("since=0") && requests[1].contains("limit=1"));
         // Regular polling starts after the latest historical event
         assert!(requests[2].contains("since=42"));
+    }
+
+    /// `ItemFinished` events for failed syncs, deletions or metadata changes must not
+    /// trigger `FileDownSyncDone`: only a successful content update does
+    #[test]
+    fn item_finished_only_fires_for_successful_updates() {
+        let historical = r"[]";
+        let failed = events_response(&[item_finished_event(
+            1,
+            "failed.txt",
+            "fid1",
+            Some("generic error"),
+            "update",
+        )]);
+        let deleted = events_response(&[item_finished_event(
+            2,
+            "deleted.txt",
+            "fid1",
+            None,
+            "delete",
+        )]);
+        let metadata = events_response(&[item_finished_event(
+            3,
+            "metadata.txt",
+            "fid1",
+            None,
+            "metadata",
+        )]);
+        let updated = events_response(&[item_finished_event(
+            4,
+            "updated.txt",
+            "fid1",
+            None,
+            "update",
+        )]);
+        let server = MockServer::start(&[
+            SYSTEM_CONFIG,
+            historical,
+            &failed,
+            &deleted,
+            &metadata,
+            &updated,
+        ]);
+        let client = test_client(&server);
+
+        let event = client.iter_events().next().unwrap().unwrap();
+
+        match event {
+            Event::FileDownSyncDone { path, folder } => {
+                assert_eq!(path, PathBuf::from("updated.txt"));
+                assert_eq!(folder, PathBuf::from("/data/folder"));
+            }
+            other => panic!("Unexpected event: {other:?}"),
+        }
     }
 }
