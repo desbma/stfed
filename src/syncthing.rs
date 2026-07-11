@@ -97,6 +97,39 @@ impl Client {
         FolderEventIterator::new(self)
     }
 
+    /// Get the id of the most recent event already in the server's buffer, if any.
+    /// Used to prime the event cursor, so that historical events are never replayed.
+    fn latest_event_id(&self) -> anyhow::Result<Option<u64>> {
+        // since=0&limit=1 returns the most recent historical event,
+        // see https://docs.syncthing.net/rest/events-get.html
+        let mut url = self.base_url.clone();
+        url.path_segments_mut()
+            .map_err(|()| anyhow::anyhow!("Invalid URL {}", self.base_url))?
+            .push("rest")
+            .push("events");
+        url.query_pairs_mut()
+            .append_pair("since", "0")
+            .append_pair("limit", "1")
+            // Don't long poll: an empty buffer means there is nothing to skip
+            .append_pair("timeout", "1");
+        log::debug!("GET {:?}", url.to_string());
+        let json_str = self
+            .session
+            .get(url.as_ref())
+            .timeout(HTTP_TIMEOUT)
+            .set(HEADER_API_KEY, &self.api_key)
+            .call()?
+            .into_string()?;
+        log::trace!("{}", json_str);
+        // The buffer can contain event types we never subscribe to, including types unknown to
+        // this program, so only look at the id
+        let events: Vec<serde_json::Value> = serde_json::from_str(&json_str)?;
+        Ok(events
+            .last()
+            .and_then(|e| e.get("id"))
+            .and_then(serde_json::Value::as_u64))
+    }
+
     /// Get a single event, no filtering is done at this level
     fn event(&self, since: u64, evt_types: &[&str]) -> anyhow::Result<syncthing_rest::Event> {
         // See https://docs.syncthing.net/dev/events.html
@@ -141,8 +174,8 @@ impl Client {
 pub(crate) struct FolderEventIterator<'a> {
     /// API client
     client: &'a Client,
-    /// Last event id
-    last_id: u64,
+    /// Last event id, `None` until the cursor has been primed
+    last_id: Option<u64>,
     /// Last state change for folder to avoid duplicates
     folder_state_change_time: HashMap<String, String>,
 }
@@ -152,7 +185,7 @@ impl<'a> FolderEventIterator<'a> {
     fn new(client: &'a Client) -> Self {
         Self {
             client,
-            last_id: 0,
+            last_id: None,
             folder_state_change_time: HashMap::new(),
         }
     }
@@ -163,12 +196,26 @@ impl Iterator for FolderEventIterator<'_> {
 
     fn next(&mut self) -> Option<Self::Item> {
         loop {
+            // Prime the cursor on the first call: polling with since=0 would return the most
+            // recent *historical* event, and hooks would fire for something that happened
+            // before we started, so start after it instead
+            let last_id = if let Some(id) = self.last_id {
+                id
+            } else {
+                let id = match self.client.latest_event_id() {
+                    Ok(id) => id.unwrap_or(0),
+                    Err(err) => return Some(Err(err)),
+                };
+                self.last_id = Some(id);
+                id
+            };
+
             // TODO subscribe to ItemFinished/FolderSummary only if needed
             // Notes:
             // DownloadProgress is not emitted for small downloads
             // FolderCompletion is for remote device progress
             let new_evt_res = self.client.event(
-                self.last_id,
+                last_id,
                 &[
                     "ItemFinished",
                     "FolderSummary",
@@ -179,7 +226,7 @@ impl Iterator for FolderEventIterator<'_> {
             return match new_evt_res {
                 Ok(new_evt) => {
                     // Update last id
-                    self.last_id = new_evt.id;
+                    self.last_id = Some(new_evt.id);
 
                     match new_evt.data {
                         syncthing_rest::EventData::ItemFinished(evt_data) => {
@@ -260,4 +307,139 @@ pub(crate) enum Event {
     FileDownSyncDone { path: PathBuf, folder: PathBuf },
     FolderDownSyncDone { folder: PathBuf },
     FileConflict { path: PathBuf, folder: PathBuf },
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{
+        collections::VecDeque,
+        io::{BufRead as _, BufReader, Write as _},
+        net::TcpListener,
+        sync::{Arc, Mutex},
+        thread,
+    };
+
+    use super::*;
+
+    /// Canned `/rest/system/config` response with a single folder
+    const SYSTEM_CONFIG: &str = r#"{"folders": [{"id": "fid1", "path": "/data/folder"}]}"#;
+
+    /// Minimal HTTP server serving canned JSON responses in order, recording request URLs
+    struct MockServer {
+        /// Server base URL
+        url: url::Url,
+        /// Request paths + query strings, in order of reception
+        requests: Arc<Mutex<Vec<String>>>,
+    }
+
+    impl MockServer {
+        /// Start a server that will serve the given JSON response bodies, in order
+        fn start(responses: &[&str]) -> Self {
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            let url =
+                url::Url::parse(&format!("http://{}/", listener.local_addr().unwrap())).unwrap();
+            let requests = Arc::new(Mutex::new(Vec::new()));
+            let server_requests = Arc::clone(&requests);
+            let mut pending: VecDeque<String> = responses.iter().map(|r| (*r).to_owned()).collect();
+            thread::spawn(move || {
+                while !pending.is_empty() {
+                    let Ok((stream, _addr)) = listener.accept() else {
+                        break;
+                    };
+                    // Read request line + headers, GET requests have no body
+                    let mut reader = BufReader::new(stream);
+                    let mut request_line = String::new();
+                    reader.read_line(&mut request_line).unwrap();
+                    let target = request_line
+                        .split_whitespace()
+                        .nth(1)
+                        .unwrap_or_default()
+                        .to_owned();
+                    loop {
+                        let mut header_line = String::new();
+                        reader.read_line(&mut header_line).unwrap();
+                        if header_line.trim_end().is_empty() {
+                            break;
+                        }
+                    }
+                    server_requests.lock().unwrap().push(target);
+                    let body = pending.pop_front().unwrap();
+                    let mut writer = reader.into_inner();
+                    write!(
+                        writer,
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                        body.len(),
+                        body
+                    )
+                    .unwrap();
+                }
+            });
+            Self { url, requests }
+        }
+
+        /// Requests received so far (path + query string)
+        fn requests(&self) -> Vec<String> {
+            self.requests.lock().unwrap().clone()
+        }
+    }
+
+    /// Create a client connected to the mock server, consuming its first canned response
+    fn test_client(server: &MockServer) -> Client {
+        let cfg = config::Config {
+            url: server.url.clone(),
+            api_key: "apikey".to_owned(),
+        };
+        Client::new(&cfg).unwrap()
+    }
+
+    /// Build a single raw `ItemFinished` event JSON object
+    fn item_finished_event(
+        id: u64,
+        item: &str,
+        folder: &str,
+        error: Option<&str>,
+        action: &str,
+    ) -> String {
+        let error_json = error.map_or_else(|| "null".to_owned(), |e| format!("\"{e}\""));
+        format!(
+            r#"{{"id": {id}, "globalID": {id}, "type": "ItemFinished", "time": "2026-01-01T00:00:00Z", "data": {{"item": "{item}", "folder": "{folder}", "error": {error_json}, "type": "file", "action": "{action}"}}}}"#
+        )
+    }
+
+    /// Wrap raw event JSON objects into a `/rest/events` response body
+    fn events_response(events: &[String]) -> String {
+        format!("[{}]", events.join(","))
+    }
+
+    /// The most recent historical event must not be replayed when the event stream starts:
+    /// the cursor is primed from the latest event id (of any type, even unknown ones)
+    #[test]
+    fn no_historical_event_replay_on_startup() {
+        let historical = r#"[{"id": 42, "globalID": 42, "type": "ClusterConfigReceived", "time": "2026-01-01T00:00:00Z", "data": null}]"#;
+        let new_event = events_response(&[item_finished_event(
+            43,
+            "newfile.txt",
+            "fid1",
+            None,
+            "update",
+        )]);
+        let server = MockServer::start(&[SYSTEM_CONFIG, historical, &new_event]);
+        let client = test_client(&server);
+
+        let event = client.iter_events().next().unwrap().unwrap();
+
+        match event {
+            Event::FileDownSyncDone { path, folder } => {
+                assert_eq!(path, PathBuf::from("newfile.txt"));
+                assert_eq!(folder, PathBuf::from("/data/folder"));
+            }
+            other => panic!("Unexpected event: {other:?}"),
+        }
+        let requests = server.requests();
+        assert_eq!(requests.len(), 3);
+        // Priming request skips over history
+        assert!(requests[1].contains("since=0") && requests[1].contains("limit=1"));
+        // Regular polling starts after the latest historical event
+        assert!(requests[2].contains("since=42"));
+    }
 }
