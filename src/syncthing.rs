@@ -257,14 +257,23 @@ impl Iterator for FolderEventIterator<'_> {
             self.last_id = Some(new_evt.id);
 
             return match new_evt.data {
-                syncthing_rest::EventData::ItemFinished(evt_data) => {
+                // The server emits this event for each item the sync processed, whatever the
+                // outcome: a failed sync left no usable file, and a deletion or a metadata
+                // change synced no content
+                syncthing_rest::EventData::ItemFinished(syncthing_rest::ItemFinishedEvent {
+                    item,
+                    folder,
+                    error: None,
+                    item_type,
+                    action: syncthing_rest::ItemAction::Update,
+                }) if item_type == "file" => {
                     let folder_path = self
                         .client
                         .folder_map
-                        .get(&evt_data.folder)
+                        .get(&folder)
                         .expect("Unknown folder id");
                     Some(Ok(Event::FileDownSyncDone {
-                        path: PathBuf::from(evt_data.item),
+                        path: PathBuf::from(item),
                         folder: folder_path.to_owned(),
                     }))
                 }
@@ -317,7 +326,7 @@ impl Iterator for FolderEventIterator<'_> {
                 syncthing_rest::EventData::ConfigSaved(_) => {
                     Some(Err(ServerConfigChanged::ConfigSaved.into()))
                 }
-                _ => unimplemented!(),
+                _ => continue,
             };
         }
     }
@@ -573,15 +582,26 @@ mod tests {
         }
     }
 
-    /// Data payload of an `ItemFinished` event, for a file successfully updated by a sync
-    fn item_finished(item: &str, folder: &str) -> serde_json::Value {
+    /// Data payload of an `ItemFinished` event
+    fn item_finished_data(
+        item: &str,
+        folder: &str,
+        error: Option<&str>,
+        item_type: &str,
+        action: &str,
+    ) -> serde_json::Value {
         json!({
             "item": item,
             "folder": folder,
-            "error": null,
-            "type": "file",
-            "action": "update",
+            "error": error,
+            "type": item_type,
+            "action": action,
         })
+    }
+
+    /// Data payload of an `ItemFinished` event, for a file successfully updated by a sync
+    fn item_finished(item: &str, folder: &str) -> serde_json::Value {
+        item_finished_data(item, folder, None, "file", "update")
     }
 
     /// Stream events in a background thread, to be able to assert on what is received or not
@@ -705,6 +725,47 @@ mod tests {
         assert_eq!(
             recv_synced_files(&events, 2),
             ["2.txt", "3.txt"].map(PathBuf::from)
+        );
+    }
+
+    /// An item the sync did not update as a local file must not be reported as synced down
+    #[test]
+    fn ignore_item_finished_of_non_updated_file() {
+        let server = TestSyncthingServer::start(&[("fid1", "/data/folder")]);
+
+        let events = stream_events(connect(&server), None);
+
+        server.wait_event_requests(2);
+        server.push_events(&[
+            (
+                "ItemFinished",
+                item_finished_data(
+                    "failed.txt",
+                    "fid1",
+                    Some("no space left"),
+                    "file",
+                    "update",
+                ),
+            ),
+            (
+                "ItemFinished",
+                item_finished_data("deleted.txt", "fid1", None, "file", "delete"),
+            ),
+            (
+                "ItemFinished",
+                item_finished_data("chmod.txt", "fid1", None, "file", "metadata"),
+            ),
+            (
+                "ItemFinished",
+                item_finished_data("subdir", "fid1", None, "dir", "update"),
+            ),
+            ("ItemFinished", item_finished("ok.txt", "fid1")),
+        ]);
+
+        assert_eq!(recv_synced_files(&events, 1), [PathBuf::from("ok.txt")]);
+        assert!(
+            events.recv_timeout(NO_EVENT_DELAY).is_err(),
+            "Unexpected event"
         );
     }
 
