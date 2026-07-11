@@ -7,7 +7,6 @@ use std::{
     },
     io,
     path::PathBuf,
-    sync::LazyLock,
     time::Duration,
 };
 
@@ -56,9 +55,6 @@ pub(crate) struct Cursor {
 const REST_TIMEOUT_EVENT_STREAM: Duration = Duration::from_secs(60 * 60);
 /// HTTP timeout for normal requests
 const HTTP_TIMEOUT: Duration = Duration::from_secs(10);
-/// HTTP timeout for long event requests
-static HTTP_TIMEOUT_EVENT_STREAM: LazyLock<Duration> =
-    LazyLock::new(|| REST_TIMEOUT_EVENT_STREAM + HTTP_TIMEOUT);
 /// Header key value for Synthing API key
 const HEADER_API_KEY: &str = "X-API-Key";
 /// Event types to subscribe to
@@ -77,16 +73,16 @@ impl Client {
     /// Constructor
     pub(crate) fn new(cfg: &config::Config) -> anyhow::Result<Client> {
         // Build session
-        let session = ureq::AgentBuilder::new()
-            .timeout_connect(HTTP_TIMEOUT)
-            .timeout_read(*HTTP_TIMEOUT_EVENT_STREAM)
-            .timeout_write(HTTP_TIMEOUT)
-            .user_agent(&format!(
-                "{}/{}",
-                env!("CARGO_PKG_NAME"),
-                env!("CARGO_PKG_VERSION")
-            ))
-            .build();
+        let session = ureq::Agent::new_with_config(
+            ureq::Agent::config_builder()
+                .timeout_connect(Some(HTTP_TIMEOUT))
+                .user_agent(format!(
+                    "{}/{}",
+                    env!("CARGO_PKG_NAME"),
+                    env!("CARGO_PKG_VERSION")
+                ))
+                .build(),
+        );
 
         // Get system config to build folder map
         let base_url = cfg.url.clone();
@@ -122,10 +118,13 @@ impl Client {
         log::debug!("GET {:?}", url.to_string());
         let json_str = session
             .get(url.as_ref())
-            .timeout(HTTP_TIMEOUT)
-            .set(HEADER_API_KEY, api_key)
+            .config()
+            .timeout_global(Some(HTTP_TIMEOUT))
+            .build()
+            .header(HEADER_API_KEY, api_key)
             .call()?
-            .into_string()?;
+            .into_body()
+            .read_to_string()?;
         log::trace!("{}", json_str);
         Ok(json_str)
     }
@@ -169,13 +168,16 @@ impl Client {
         let response = self
             .session
             .get(url.as_ref())
-            .timeout(timeout + HTTP_TIMEOUT)
-            .set(HEADER_API_KEY, &self.api_key)
-            .call()?
-            .into_string();
+            .config()
+            .timeout_global(Some(timeout + HTTP_TIMEOUT))
+            .build()
+            .header(HEADER_API_KEY, &self.api_key)
+            .call()
+            .and_then(|r| r.into_body().read_to_string());
         let json_str = match response {
-            // ureq sends InvalidInput error when socket closes unexpectedly
-            Err(err) if err.kind() == io::ErrorKind::InvalidInput => {
+            // ureq sends an unexpected EOF error when the socket closes, either while waiting
+            // for the response of a long polling request, or while reading its body
+            Err(ureq::Error::Io(err)) if err.kind() == io::ErrorKind::UnexpectedEof => {
                 return Err(ServerGone { inner: err }.into());
             }
             Err(err) => return Err(err.into()),
@@ -345,6 +347,7 @@ pub(crate) enum Event {
 mod tests {
     use std::{
         iter,
+        net::{Shutdown, TcpListener, TcpStream},
         sync::{mpsc, Arc, Condvar, Mutex},
         thread,
         time::Instant,
@@ -518,6 +521,67 @@ mod tests {
         }
     }
 
+    /// TCP relay in front of a server, able to close the connections it forwards
+    struct VanishingRelay {
+        /// Relay base URL
+        url: url::Url,
+        /// Client side of each forwarded connection
+        connections: Arc<Mutex<Vec<TcpStream>>>,
+    }
+
+    impl VanishingRelay {
+        /// Start a relay forwarding to the server at `target`
+        fn start(target: &url::Url) -> Self {
+            let target = format!(
+                "{}:{}",
+                target.host_str().expect("Target URL has no host"),
+                target.port().expect("Target URL has no port")
+            );
+            let listener = TcpListener::bind("127.0.0.1:0").expect("Failed to start relay");
+            let addr = listener.local_addr().expect("Relay has no address");
+            let url = url::Url::parse(&format!("http://{addr}/")).expect("Invalid relay URL");
+            let connections: Arc<Mutex<Vec<TcpStream>>> = Arc::new(Mutex::new(Vec::new()));
+
+            let connections_thread = Arc::clone(&connections);
+            thread::spawn(move || {
+                for client in listener.incoming() {
+                    let client = client.expect("Failed to accept relay connection");
+                    let server =
+                        TcpStream::connect(&target).expect("Failed to connect to relay target");
+                    let clone = |s: &TcpStream| s.try_clone().expect("Failed to clone connection");
+                    connections_thread
+                        .lock()
+                        .expect("Relay connections poisoned")
+                        .push(clone(&client));
+                    for (mut from, mut to) in [(clone(&client), clone(&server)), (server, client)] {
+                        thread::spawn(move || io::copy(&mut from, &mut to));
+                    }
+                }
+            });
+
+            Self { url, connections }
+        }
+
+        /// Relay base URL
+        fn url(&self) -> url::Url {
+            self.url.clone()
+        }
+
+        /// Close the forwarded connections, as a server going away does
+        fn vanish(&self) {
+            for connection in self
+                .connections
+                .lock()
+                .expect("Relay connections poisoned")
+                .drain(..)
+            {
+                connection
+                    .shutdown(Shutdown::Both)
+                    .expect("Failed to close relay connection");
+            }
+        }
+    }
+
     /// Serve a single request
     fn serve(request: tiny_http::Request, state: &(Mutex<State>, Condvar), system_config: &str) {
         let url = url::Url::parse("http://localhost/")
@@ -629,10 +693,10 @@ mod tests {
         }
     }
 
-    /// Client connected to a server, with the folder of the tests already set up
-    fn connect(server: &TestSyncthingServer) -> Client {
+    /// Client connected to the server reachable at `url`
+    fn connect(url: url::Url) -> Client {
         let cfg = config::Config {
-            url: server.url(),
+            url,
             api_key: "apikey".to_owned(),
         };
         Client::new(&cfg).expect("Failed to build client")
@@ -663,7 +727,7 @@ mod tests {
         let server = TestSyncthingServer::start(&[("fid1", "/data/folder")]);
         server.push_event("ItemFinished", item_finished("old.txt", "fid1"));
 
-        let events = stream_events(connect(&server), None);
+        let events = stream_events(connect(server.url()), None);
 
         assert!(
             events.recv_timeout(NO_EVENT_DELAY).is_err(),
@@ -698,7 +762,7 @@ mod tests {
     fn no_event_loss_on_burst() {
         let server = TestSyncthingServer::start(&[("fid1", "/data/folder")]);
 
-        let events = stream_events(connect(&server), None);
+        let events = stream_events(connect(server.url()), None);
 
         // Wait for the request priming the cursor and the first polling one, so that the
         // events are not mistaken for events that occurred before we connected
@@ -720,7 +784,7 @@ mod tests {
         server.push_events(&items.map(|item| ("ItemFinished", item_finished(item, "fid1"))));
 
         // The previous connection consumed the first event before it was lost
-        let events = stream_events(connect(&server), Some(cursor(SERVER_START_TIME, 1)));
+        let events = stream_events(connect(server.url()), Some(cursor(SERVER_START_TIME, 1)));
 
         assert_eq!(
             recv_synced_files(&events, 2),
@@ -733,7 +797,7 @@ mod tests {
     fn ignore_item_finished_of_non_updated_file() {
         let server = TestSyncthingServer::start(&[("fid1", "/data/folder")]);
 
-        let events = stream_events(connect(&server), None);
+        let events = stream_events(connect(server.url()), None);
 
         server.wait_event_requests(2);
         server.push_events(&[
@@ -769,6 +833,29 @@ mod tests {
         );
     }
 
+    /// A server closing the connection must be reported as gone, so the main loop reconnects
+    #[test]
+    fn server_gone_on_connection_close() {
+        let server = TestSyncthingServer::start(&[("fid1", "/data/folder")]);
+        let relay = VanishingRelay::start(&server.url());
+
+        let events = stream_events(connect(relay.url()), None);
+
+        // Wait for the request priming the cursor and the first polling one, so the connection
+        // is closed while a long polling request is pending
+        server.wait_event_requests(2);
+        relay.vanish();
+
+        let err = events
+            .recv_timeout(EVENT_DELAY)
+            .expect("No event received")
+            .expect_err("Server disconnection was not reported");
+        assert!(
+            err.downcast_ref::<ServerGone>().is_some(),
+            "Unexpected error: {err:?}"
+        );
+    }
+
     /// A server that restarted numbers its events from scratch, its whole buffer must be processed
     #[test]
     fn restart_event_stream_after_server_restart() {
@@ -779,7 +866,7 @@ mod tests {
         // The previous connection was to another server instance, whose ids are unrelated to
         // those of this one, even when they are within the range of its event buffer
         let events = stream_events(
-            connect(&server),
+            connect(server.url()),
             Some(cursor(PREVIOUS_SERVER_START_TIME, 1)),
         );
 

@@ -39,8 +39,7 @@ impl Config {
     /// Try to generate a valid default configuration from the local Syncthing configuration
     fn default_from_syncthing_config() -> anyhow::Result<Self> {
         // Read Syncthing config to get address & API key
-        let xdg_dirs = xdg::BaseDirectories::with_prefix("syncthing")
-            .context("Unable fo find Synthing config directory")?;
+        let xdg_dirs = xdg::BaseDirectories::with_prefix("syncthing");
         let st_config_filepath = xdg_dirs
             .find_state_file("config.xml")
             .or_else(|| xdg_dirs.find_config_file("config.xml"))
@@ -168,7 +167,7 @@ pub(crate) enum FolderEvent {
 /// Parse local configuration
 pub(crate) fn parse() -> anyhow::Result<(Config, FolderConfig)> {
     let binary_name = env!("CARGO_PKG_NAME");
-    let xdg_dirs = xdg::BaseDirectories::with_prefix(binary_name)?;
+    let xdg_dirs = xdg::BaseDirectories::with_prefix(binary_name);
     let config_filepath = xdg_dirs.find_config_file("config.toml");
 
     let config = if let Some(config_filepath) = config_filepath {

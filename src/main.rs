@@ -160,8 +160,8 @@ fn main() -> anyhow::Result<()> {
                 cursor = events.cursor();
             }
             #[expect(clippy::ref_patterns)]
-            Err(ref err) => match err.root_cause().downcast_ref::<io::Error>() {
-                Some(err2) if err2.kind() == io::ErrorKind::ConnectionRefused => {
+            Err(ref err) => match err.root_cause().downcast_ref::<ureq::Error>() {
+                Some(ureq::Error::Io(err2)) if err2.kind() == io::ErrorKind::ConnectionRefused => {
                     log::warn!(
                         "Syncthing server connection failed, will restart main loop. {:?}",
                         err
