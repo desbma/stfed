@@ -96,3 +96,129 @@ pub(crate) fn reaper(
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::{fs, thread, time::Instant};
+
+    use super::*;
+
+    /// Hook running `command`
+    fn hook(command: &[&str], allow_concurrent: Option<bool>) -> config::FolderHook {
+        config::FolderHook {
+            folder: Path::new("/").try_into().unwrap(),
+            event: config::FolderEvent::FileDownSyncDone,
+            filter: None,
+            command: command.iter().map(|a| (*a).to_owned()).collect(),
+            allow_concurrent,
+        }
+    }
+
+    /// A hook whose previous run has not been reaped must not run again
+    #[test]
+    fn skip_run_while_previous_run_not_reaped() {
+        let hook = hook(&["true"], None);
+        let (reaper_tx, reaper_rx) = mpsc::channel();
+        let running_hooks = Arc::new(Mutex::new(HashSet::new()));
+
+        run(&hook, None, Path::new("/"), &reaper_tx, &running_hooks).unwrap();
+        let (_hook_id, mut child) = reaper_rx.try_recv().unwrap();
+        child.wait().unwrap();
+
+        run(&hook, None, Path::new("/"), &reaper_tx, &running_hooks).unwrap();
+        assert!(reaper_rx.try_recv().is_err());
+    }
+
+    /// A hook allowing concurrent runs must spawn a process even while already running
+    #[test]
+    fn concurrent_runs_when_allowed() {
+        let hook = hook(&["true"], Some(true));
+        let (reaper_tx, reaper_rx) = mpsc::channel();
+        let running_hooks = Arc::new(Mutex::new(HashSet::new()));
+
+        run(&hook, None, Path::new("/"), &reaper_tx, &running_hooks).unwrap();
+        run(&hook, None, Path::new("/"), &reaper_tx, &running_hooks).unwrap();
+
+        for _ in 0..2 {
+            let (_hook_id, mut child) = reaper_rx.try_recv().unwrap();
+            child.wait().unwrap();
+        }
+    }
+
+    /// The event path and folder must be exported to the hook command environment
+    #[test]
+    fn export_path_and_folder_to_environment() {
+        let dir = tempfile::tempdir().unwrap();
+        let out = dir.path().join("out");
+        let script = format!(
+            "printf '%s\\n%s' \"$STFED_PATH\" \"$STFED_FOLDER\" > {out}",
+            out = out.to_str().unwrap()
+        );
+        let hook = hook(&["sh", "-c", &script], None);
+        let (reaper_tx, reaper_rx) = mpsc::channel();
+        let running_hooks = Arc::new(Mutex::new(HashSet::new()));
+
+        run(
+            &hook,
+            Some(Path::new("sub/file.txt")),
+            Path::new("/data/folder"),
+            &reaper_tx,
+            &running_hooks,
+        )
+        .unwrap();
+
+        let (_hook_id, mut child) = reaper_rx.try_recv().unwrap();
+        assert!(child.wait().unwrap().success());
+        assert_eq!(
+            fs::read_to_string(&out).unwrap(),
+            "sub/file.txt\n/data/folder"
+        );
+    }
+
+    /// Without an event path, the exported path variable must be empty
+    #[test]
+    fn export_empty_path_when_absent() {
+        let dir = tempfile::tempdir().unwrap();
+        let out = dir.path().join("out");
+        let script = format!(
+            "printf '%s\\n%s' \"$STFED_PATH\" \"$STFED_FOLDER\" > {out}",
+            out = out.to_str().unwrap()
+        );
+        let hook = hook(&["sh", "-c", &script], None);
+        let (reaper_tx, reaper_rx) = mpsc::channel();
+        let running_hooks = Arc::new(Mutex::new(HashSet::new()));
+
+        run(
+            &hook,
+            None,
+            Path::new("/data/folder"),
+            &reaper_tx,
+            &running_hooks,
+        )
+        .unwrap();
+
+        let (_hook_id, mut child) = reaper_rx.try_recv().unwrap();
+        assert!(child.wait().unwrap().success());
+        assert_eq!(fs::read_to_string(&out).unwrap(), "\n/data/folder");
+    }
+
+    /// The reaper must unregister a hook once its process exits, so it can run again
+    #[test]
+    fn reaper_unregisters_exited_hook() {
+        let hook = hook(&["true"], None);
+        let (reaper_tx, reaper_rx) = mpsc::channel();
+        let running_hooks = Arc::new(Mutex::new(HashSet::new()));
+
+        run(&hook, None, Path::new("/"), &reaper_tx, &running_hooks).unwrap();
+        assert!(!running_hooks.lock().unwrap().is_empty());
+
+        let running_hooks_reaper = Arc::clone(&running_hooks);
+        thread::spawn(move || reaper(&reaper_rx, &running_hooks_reaper));
+
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !running_hooks.lock().unwrap().is_empty() {
+            assert!(Instant::now() < deadline);
+            thread::sleep(Duration::from_millis(10));
+        }
+    }
+}

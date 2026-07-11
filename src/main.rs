@@ -174,3 +174,17 @@ fn main() -> anyhow::Result<()> {
         thread::sleep(RECONNECT_DELAY);
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Conflict file names as created by Syncthing must match, at any folder depth
+    #[test]
+    fn conflict_matcher_matches_conflict_files() {
+        assert!(CONFLICT_MATCHER.is_match("doc.sync-conflict-20260711-084512-ABCDEFG.txt"));
+        assert!(CONFLICT_MATCHER.is_match("sub/dir/doc.sync-conflict-20260711-084512-ABCDEFG.txt"));
+        assert!(!CONFLICT_MATCHER.is_match("doc.txt"));
+        assert!(!CONFLICT_MATCHER.is_match("sync-conflict.txt"));
+    }
+}

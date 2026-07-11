@@ -200,3 +200,160 @@ pub(crate) fn parse() -> anyhow::Result<(Config, FolderConfig)> {
 
     Ok((config, hooks))
 }
+
+#[cfg(test)]
+mod tests {
+    use std::os::unix::fs::symlink;
+
+    use super::*;
+
+    /// A hooks document, exercising all supported keys
+    #[test]
+    fn parse_hooks_document() {
+        let dir = tempfile::tempdir().unwrap();
+        let folder = dir.path().canonicalize().unwrap();
+        let toml_data = format!(
+            r#"
+            [[hooks]]
+            folder = "{folder}"
+            event = "file_down_sync_done"
+            filter = "*.pdf"
+            command = "notify-send 'stfed event' body"
+
+            [[hooks]]
+            folder = "{folder}"
+            event = "remote_file_conflict"
+            command = "true"
+            allow_concurrent = true
+            "#,
+            folder = folder.to_str().unwrap()
+        );
+
+        let hooks: FolderConfig = toml::from_str(&toml_data).unwrap();
+
+        assert_eq!(hooks.hooks.len(), 2);
+        assert_eq!(hooks.hooks[0].folder, NormalizedPath(folder.clone()));
+        assert_eq!(hooks.hooks[0].event, FolderEvent::FileDownSyncDone);
+        assert_eq!(
+            hooks.hooks[0].command,
+            ["notify-send", "stfed event", "body"]
+        );
+        assert_eq!(hooks.hooks[0].allow_concurrent, None);
+        assert!(hooks.hooks[0].filter.is_some());
+        assert_eq!(hooks.hooks[1].folder, NormalizedPath(folder));
+        assert_eq!(hooks.hooks[1].event, FolderEvent::RemoteFileConflict);
+        assert_eq!(hooks.hooks[1].command, ["true"]);
+        assert_eq!(hooks.hooks[1].allow_concurrent, Some(true));
+        assert!(hooks.hooks[1].filter.is_none());
+    }
+
+    /// Filter glob wildcards must not cross directory separators
+    #[test]
+    fn filter_glob_does_not_cross_directories() {
+        let dir = tempfile::tempdir().unwrap();
+        let toml_data = format!(
+            r#"
+            [[hooks]]
+            folder = "{folder}"
+            event = "file_down_sync_done"
+            filter = "*.pdf"
+            command = "true"
+            "#,
+            folder = dir.path().to_str().unwrap()
+        );
+
+        let hooks: FolderConfig = toml::from_str(&toml_data).unwrap();
+
+        let filter = hooks.hooks[0].filter.as_ref().unwrap();
+        assert!(filter.is_match("report.pdf"));
+        assert!(!filter.is_match("sub/report.pdf"));
+    }
+
+    /// An unparseable command string must be rejected when parsing hooks
+    #[test]
+    fn reject_invalid_command() {
+        let dir = tempfile::tempdir().unwrap();
+        let toml_data = format!(
+            r#"
+            [[hooks]]
+            folder = "{folder}"
+            event = "file_down_sync_done"
+            command = "notify-send 'unbalanced"
+            "#,
+            folder = dir.path().to_str().unwrap()
+        );
+
+        assert!(toml::from_str::<FolderConfig>(&toml_data).is_err());
+    }
+
+    /// An invalid filter glob must be rejected when parsing hooks
+    #[test]
+    fn reject_invalid_filter_glob() {
+        let dir = tempfile::tempdir().unwrap();
+        let toml_data = format!(
+            r#"
+            [[hooks]]
+            folder = "{folder}"
+            event = "file_down_sync_done"
+            filter = "[oops"
+            command = "true"
+            "#,
+            folder = dir.path().to_str().unwrap()
+        );
+
+        assert!(toml::from_str::<FolderConfig>(&toml_data).is_err());
+    }
+
+    /// Normalization must resolve symlinks and relative components
+    #[test]
+    fn normalized_path_canonicalizes() {
+        let dir = tempfile::tempdir().unwrap();
+        let real = dir.path().join("real");
+        fs::create_dir(&real).unwrap();
+        let link = dir.path().join("link");
+        symlink(&real, &link).unwrap();
+        let real = real.canonicalize().unwrap();
+
+        assert_eq!(
+            NormalizedPath::try_from(link.as_path()).unwrap(),
+            NormalizedPath(real.clone())
+        );
+        assert_eq!(
+            NormalizedPath::try_from(dir.path().join("real/../real").as_path()).unwrap(),
+            NormalizedPath(real)
+        );
+    }
+
+    /// A path that does not exist must be rejected
+    #[test]
+    fn normalized_path_rejects_missing_path() {
+        let dir = tempfile::tempdir().unwrap();
+
+        assert!(NormalizedPath::try_from(dir.path().join("missing").as_path()).is_err());
+    }
+
+    /// Address and API key must be extracted from a local Syncthing configuration
+    #[test]
+    fn parse_syncthing_xml_config() {
+        let xml = r#"
+            <configuration version="37">
+                <folder id="fid1" label="Folder" path="/data/folder" type="sendreceive">
+                    <device id="AAAAAAA-AAAAAAA" introducedBy=""></device>
+                </folder>
+                <gui enabled="true" tls="false" debugging="false">
+                    <address>127.0.0.1:8384</address>
+                    <apikey>abcdefgh123456</apikey>
+                    <theme>default</theme>
+                </gui>
+                <options>
+                    <listenAddress>default</listenAddress>
+                </options>
+            </configuration>
+            "#;
+
+        let config: SyncthingXmlConfig = quick_xml::de::from_str(xml).unwrap();
+
+        assert_eq!(config.gui.address, "127.0.0.1:8384");
+        assert_eq!(config.gui.apikey, "abcdefgh123456");
+    }
+}

@@ -44,6 +44,7 @@ pub(crate) struct Client {
 }
 
 /// Position in the event stream of a server instance
+#[cfg_attr(test, derive(Debug, Eq, PartialEq))]
 pub(crate) struct Cursor {
     /// Start time of the server instance the event ids refer to
     server_start_time: String,
@@ -660,6 +661,56 @@ mod tests {
         item_finished_data(item, folder, None, "file", "update")
     }
 
+    /// Data payload of a `FolderSummary` event
+    fn folder_summary(
+        folder: &str,
+        need_total_items: u64,
+        state_changed: &str,
+    ) -> serde_json::Value {
+        json!({
+            "folder": folder,
+            "summary": {
+                "globalBytes": 1024,
+                "globalDeleted": 0,
+                "globalDirectories": 1,
+                "globalFiles": 3,
+                "globalSymlinks": 0,
+                "globalTotalItems": 4,
+                "ignorePatterns": false,
+                "inSyncBytes": 1024,
+                "inSyncFiles": 3,
+                "localBytes": 1024,
+                "localDeleted": 0,
+                "localDirectories": 1,
+                "localFiles": 3,
+                "localSymlinks": 0,
+                "localTotalItems": 4,
+                "needBytes": 0,
+                "needDeletes": 0,
+                "needDirectories": 0,
+                "needFiles": 0,
+                "needSymlinks": 0,
+                "needTotalItems": need_total_items,
+                "pullErrors": 0,
+                "sequence": 100,
+                "state": "idle",
+                "stateChanged": state_changed,
+                "version": 100,
+            },
+        })
+    }
+
+    /// Data payload of a `LocalChangeDetected` event
+    fn local_change(path: &str, folder: &str, item_type: &str, action: &str) -> serde_json::Value {
+        json!({
+            "action": action,
+            "folder": folder,
+            "label": "Folder",
+            "path": path,
+            "type": item_type,
+        })
+    }
+
     /// Stream events in a background thread, to be able to assert on what is received or not
     fn stream_events(
         client: Client,
@@ -705,6 +756,13 @@ mod tests {
     fn file_down_sync_done(item: &str) -> Event {
         Event::FileDownSyncDone {
             path: PathBuf::from(item),
+            folder: PathBuf::from(FOLDER_PATH),
+        }
+    }
+
+    /// Event of the folder of the tests fully synced down
+    fn folder_down_sync_done() -> Event {
+        Event::FolderDownSyncDone {
             folder: PathBuf::from(FOLDER_PATH),
         }
     }
@@ -821,6 +879,123 @@ mod tests {
 
         let err = events.recv_timeout(EVENT_DELAY).unwrap().unwrap_err();
         assert!(err.downcast_ref::<ServerGone>().is_some());
+    }
+
+    /// A summary of a folder that still needs items must not be reported as synced down
+    #[test]
+    fn ignore_incomplete_folder_summary() {
+        let server = TestSyncthingServer::start(&[(FOLDER_ID, FOLDER_PATH)]);
+
+        let events = stream_events(connect(server.url()), None);
+
+        server.wait_event_requests(2);
+        server.push_event(
+            "FolderSummary",
+            folder_summary(FOLDER_ID, 2, "2026-01-01T00:00:01Z"),
+        );
+        assert!(events.recv_timeout(NO_EVENT_DELAY).is_err());
+
+        server.push_event(
+            "FolderSummary",
+            folder_summary(FOLDER_ID, 0, "2026-01-01T00:00:02Z"),
+        );
+        assert_eq!(recv_events(&events, 1), [folder_down_sync_done()]);
+    }
+
+    /// A summary re-sent for the same state change must be reported only once
+    #[test]
+    fn ignore_duplicate_folder_summary() {
+        let server = TestSyncthingServer::start(&[(FOLDER_ID, FOLDER_PATH)]);
+
+        let events = stream_events(connect(server.url()), None);
+
+        server.wait_event_requests(2);
+        server.push_event(
+            "FolderSummary",
+            folder_summary(FOLDER_ID, 0, "2026-01-01T00:00:01Z"),
+        );
+        assert_eq!(recv_events(&events, 1), [folder_down_sync_done()]);
+
+        server.push_event(
+            "FolderSummary",
+            folder_summary(FOLDER_ID, 0, "2026-01-01T00:00:01Z"),
+        );
+        assert!(events.recv_timeout(NO_EVENT_DELAY).is_err());
+
+        server.push_event(
+            "FolderSummary",
+            folder_summary(FOLDER_ID, 0, "2026-01-01T00:00:02Z"),
+        );
+        assert_eq!(recv_events(&events, 1), [folder_down_sync_done()]);
+    }
+
+    /// Only the modification of a conflict file must be reported as a local conflict
+    #[test]
+    fn file_conflict_on_conflict_file_modification() {
+        let server = TestSyncthingServer::start(&[(FOLDER_ID, FOLDER_PATH)]);
+
+        let events = stream_events(connect(server.url()), None);
+
+        server.wait_event_requests(2);
+        let conflict_path = "doc.sync-conflict-20260101-000000-AAAAAAA.txt";
+        server.push_events(&[
+            (
+                "LocalChangeDetected",
+                local_change("doc.txt", FOLDER_ID, "file", "modified"),
+            ),
+            (
+                "LocalChangeDetected",
+                local_change(conflict_path, FOLDER_ID, "dir", "modified"),
+            ),
+            (
+                "LocalChangeDetected",
+                local_change(conflict_path, FOLDER_ID, "file", "deleted"),
+            ),
+            (
+                "LocalChangeDetected",
+                local_change(conflict_path, FOLDER_ID, "file", "modified"),
+            ),
+        ]);
+
+        assert_eq!(
+            recv_events(&events, 1),
+            [Event::FileConflict {
+                path: PathBuf::from(conflict_path),
+                folder: PathBuf::from(FOLDER_PATH),
+            }]
+        );
+        assert!(events.recv_timeout(NO_EVENT_DELAY).is_err());
+    }
+
+    /// A server config change must interrupt the stream, so the folder map is rebuilt
+    #[test]
+    fn server_config_changed_on_config_saved() {
+        let server = TestSyncthingServer::start(&[(FOLDER_ID, FOLDER_PATH)]);
+
+        let events = stream_events(connect(server.url()), None);
+
+        server.wait_event_requests(2);
+        server.push_event("ConfigSaved", json!({"version": 2}));
+
+        let err = events.recv_timeout(EVENT_DELAY).unwrap().unwrap_err();
+        assert!(err.downcast_ref::<ServerConfigChanged>().is_some());
+    }
+
+    /// The cursor must be unset until primed, then track the last consumed event
+    #[test]
+    fn cursor_tracks_stream_position() {
+        let server = TestSyncthingServer::start(&[(FOLDER_ID, FOLDER_PATH)]);
+        server.push_event("ItemFinished", item_finished("1.txt", FOLDER_ID));
+
+        let client = connect(server.url());
+        assert!(client.iter_events(None).cursor().is_none());
+
+        let mut events = client.iter_events(Some(&cursor(SERVER_START_TIME, 0)));
+        assert_eq!(
+            events.next().unwrap().unwrap(),
+            file_down_sync_done("1.txt")
+        );
+        assert_eq!(events.cursor(), Some(cursor(SERVER_START_TIME, 1)));
     }
 
     /// A server that restarted numbers its events from scratch, its whole buffer must be processed
