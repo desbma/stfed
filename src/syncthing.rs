@@ -2,8 +2,8 @@
 
 use std::{
     collections::{
-        hash_map::{Entry, HashMap},
         VecDeque,
+        hash_map::{Entry, HashMap},
     },
     io,
     path::PathBuf,
@@ -364,7 +364,7 @@ mod tests {
     use std::{
         iter,
         net::{Shutdown, TcpListener, TcpStream},
-        sync::{mpsc, Arc, Condvar, Mutex},
+        sync::{Arc, Condvar, Mutex, mpsc},
         thread,
         time::Instant,
     };
@@ -725,10 +725,12 @@ mod tests {
 
         // The event ids of a subscription are only comparable with those of the same
         // subscription, so the request priming the cursor must use the polled filter
-        assert!(server
-            .event_requests()
-            .iter()
-            .all(|r| r.contains("events=ItemFinished%2CFolderSummary")));
+        assert!(
+            server
+                .event_requests()
+                .iter()
+                .all(|r| r.contains("events=ItemFinished%2CFolderSummary"))
+        );
     }
 
     /// Events buffered by the server between two polls must all be delivered

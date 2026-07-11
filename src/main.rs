@@ -2,12 +2,12 @@
 
 use std::{
     collections::{
-        hash_map::{Entry, HashMap},
         HashSet,
+        hash_map::{Entry, HashMap},
     },
     io,
     rc::Rc,
-    sync::{mpsc, Arc, LazyLock, Mutex},
+    sync::{Arc, LazyLock, Mutex, mpsc},
     thread,
     time::Duration,
 };

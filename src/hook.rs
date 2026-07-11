@@ -5,7 +5,7 @@ use std::{
     path::{Path, PathBuf},
     process::{Child, Command, Stdio},
     ptr,
-    sync::{mpsc, Arc, Mutex},
+    sync::{Arc, Mutex, mpsc},
     time::Duration,
 };
 
@@ -51,7 +51,9 @@ pub(crate) fn run(
 
         reaper_tx.send((hook_id, child))?;
     } else {
-        log::warn!("A process is already running for this hook, and allow_concurrent is set for false, ignoring");
+        log::warn!(
+            "A process is already running for this hook, and allow_concurrent is set for false, ignoring"
+        );
     }
 
     Ok(())
