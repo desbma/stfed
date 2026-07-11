@@ -337,6 +337,7 @@ impl Iterator for FolderEventIterator<'_> {
 /// Syncthing event, see `config::FolderEvent` for meaning of each event
 #[expect(clippy::missing_docs_in_private_items)]
 #[derive(Debug)]
+#[cfg_attr(test, derive(Eq, PartialEq))]
 pub(crate) enum Event {
     FileDownSyncDone { path: PathBuf, folder: PathBuf },
     FolderDownSyncDone { folder: PathBuf },
@@ -368,6 +369,12 @@ mod tests {
 
     /// Start time of the server instance a previous connection was made to
     const PREVIOUS_SERVER_START_TIME: &str = "2026-07-11T11:00:00Z";
+
+    /// Id of the folder the tests sync
+    const FOLDER_ID: &str = "fid1";
+
+    /// Local path of the folder the tests sync
+    const FOLDER_PATH: &str = "/data/folder";
 
     /// Event buffered by the server
     struct BufferedEvent {
@@ -436,14 +443,9 @@ mod tests {
     impl TestSyncthingServer {
         /// Start a server exposing the given folders, as `(id, path)` pairs
         fn start(folders: &[(&str, &str)]) -> Self {
-            let server = Arc::new(
-                tiny_http::Server::http("127.0.0.1:0").expect("Failed to start Syncthing server"),
-            );
-            let addr = server
-                .server_addr()
-                .to_ip()
-                .expect("Syncthing server has no IP address");
-            let url = url::Url::parse(&format!("http://{addr}/")).expect("Invalid server URL");
+            let server = Arc::new(tiny_http::Server::http("127.0.0.1:0").unwrap());
+            let addr = server.server_addr().to_ip().unwrap();
+            let url = url::Url::parse(&format!("http://{addr}/")).unwrap();
             let state = Arc::new((Mutex::new(State::default()), Condvar::new()));
 
             let system_config = json!({
@@ -486,7 +488,7 @@ mod tests {
         /// Emit events, buffering them all before waking up any pending long polling request
         fn push_events(&self, events: &[(&str, serde_json::Value)]) {
             let (state, state_changed) = &*self.state;
-            let mut state = state.lock().expect("Server state poisoned");
+            let mut state = state.lock().unwrap();
             for (event_type, data) in events {
                 state.events.push(BufferedEvent {
                     event_type: (*event_type).to_owned(),
@@ -500,11 +502,9 @@ mod tests {
         /// Wait until the server has received `count` events requests
         fn wait_event_requests(&self, count: usize) {
             let (state, state_changed) = &*self.state;
-            let mut state = state.lock().expect("Server state poisoned");
+            let mut state = state.lock().unwrap();
             while state.event_requests.len() < count {
-                let (new_state, wait) = state_changed
-                    .wait_timeout(state, EVENT_DELAY)
-                    .expect("Server state poisoned");
+                let (new_state, wait) = state_changed.wait_timeout(state, EVENT_DELAY).unwrap();
                 assert!(!wait.timed_out(), "Missing events requests");
                 state = new_state;
             }
@@ -513,11 +513,7 @@ mod tests {
         /// Query string of each events request received so far
         fn event_requests(&self) -> Vec<String> {
             let (state, _state_changed) = &*self.state;
-            state
-                .lock()
-                .expect("Server state poisoned")
-                .event_requests
-                .clone()
+            state.lock().unwrap().event_requests.clone()
         }
     }
 
@@ -532,27 +528,19 @@ mod tests {
     impl VanishingRelay {
         /// Start a relay forwarding to the server at `target`
         fn start(target: &url::Url) -> Self {
-            let target = format!(
-                "{}:{}",
-                target.host_str().expect("Target URL has no host"),
-                target.port().expect("Target URL has no port")
-            );
-            let listener = TcpListener::bind("127.0.0.1:0").expect("Failed to start relay");
-            let addr = listener.local_addr().expect("Relay has no address");
-            let url = url::Url::parse(&format!("http://{addr}/")).expect("Invalid relay URL");
+            let target = format!("{}:{}", target.host_str().unwrap(), target.port().unwrap());
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            let addr = listener.local_addr().unwrap();
+            let url = url::Url::parse(&format!("http://{addr}/")).unwrap();
             let connections: Arc<Mutex<Vec<TcpStream>>> = Arc::new(Mutex::new(Vec::new()));
 
             let connections_thread = Arc::clone(&connections);
             thread::spawn(move || {
                 for client in listener.incoming() {
-                    let client = client.expect("Failed to accept relay connection");
-                    let server =
-                        TcpStream::connect(&target).expect("Failed to connect to relay target");
-                    let clone = |s: &TcpStream| s.try_clone().expect("Failed to clone connection");
-                    connections_thread
-                        .lock()
-                        .expect("Relay connections poisoned")
-                        .push(clone(&client));
+                    let client = client.unwrap();
+                    let server = TcpStream::connect(&target).unwrap();
+                    let clone = |s: &TcpStream| s.try_clone().unwrap();
+                    connections_thread.lock().unwrap().push(clone(&client));
                     for (mut from, mut to) in [(clone(&client), clone(&server)), (server, client)] {
                         thread::spawn(move || io::copy(&mut from, &mut to));
                     }
@@ -569,15 +557,8 @@ mod tests {
 
         /// Close the forwarded connections, as a server going away does
         fn vanish(&self) {
-            for connection in self
-                .connections
-                .lock()
-                .expect("Relay connections poisoned")
-                .drain(..)
-            {
-                connection
-                    .shutdown(Shutdown::Both)
-                    .expect("Failed to close relay connection");
+            for connection in self.connections.lock().unwrap().drain(..) {
+                connection.shutdown(Shutdown::Both).unwrap();
             }
         }
     }
@@ -585,9 +566,9 @@ mod tests {
     /// Serve a single request
     fn serve(request: tiny_http::Request, state: &(Mutex<State>, Condvar), system_config: &str) {
         let url = url::Url::parse("http://localhost/")
-            .expect("Invalid base URL")
+            .unwrap()
             .join(request.url())
-            .expect("Invalid request URL");
+            .unwrap();
         let body = match url.path() {
             "/rest/system/config" => system_config.to_owned(),
             "/rest/system/status" => json!({
@@ -599,11 +580,10 @@ mod tests {
             path => panic!("Unexpected request path {path:?}"),
         };
         let content_type =
-            tiny_http::Header::from_bytes(&b"Content-Type"[..], &b"application/json"[..])
-                .expect("Invalid header");
+            tiny_http::Header::from_bytes(&b"Content-Type"[..], &b"application/json"[..]).unwrap();
         request
             .respond(tiny_http::Response::from_string(body).with_header(content_type))
-            .expect("Failed to send response");
+            .unwrap();
     }
 
     /// Serve an events request, long polling until an event is available or the timeout expires
@@ -612,18 +592,18 @@ mod tests {
             (0, None, None, Duration::from_secs(60));
         for (key, val) in url.query_pairs() {
             match key.as_ref() {
-                "since" => since = val.parse().expect("Invalid since parameter"),
-                "limit" => limit = Some(val.parse().expect("Invalid limit parameter")),
+                "since" => since = val.parse().unwrap(),
+                "limit" => limit = Some(val.parse().unwrap()),
                 "events" => types = Some(val.split(',').map(str::to_owned).collect::<Vec<_>>()),
                 "timeout" => {
-                    timeout = Duration::from_secs(val.parse().expect("Invalid timeout parameter"));
+                    timeout = Duration::from_secs(val.parse().unwrap());
                 }
                 key => panic!("Unexpected query parameter {key:?}"),
             }
         }
 
         let (state, state_changed) = state;
-        let mut state = state.lock().expect("Server state poisoned");
+        let mut state = state.lock().unwrap();
         state
             .event_requests
             .push(url.query().unwrap_or_default().to_owned());
@@ -639,10 +619,7 @@ mod tests {
             if remaining.is_zero() {
                 return "[]".to_owned();
             }
-            state = state_changed
-                .wait_timeout(state, remaining)
-                .expect("Server state poisoned")
-                .0;
+            state = state_changed.wait_timeout(state, remaining).unwrap().0;
         }
     }
 
@@ -699,68 +676,50 @@ mod tests {
             url,
             api_key: "apikey".to_owned(),
         };
-        Client::new(&cfg).expect("Failed to build client")
+        Client::new(&cfg).unwrap()
     }
 
-    /// Consume the events of a file sync, and return the path of each synced file
-    fn recv_synced_files(
-        events: &mpsc::Receiver<anyhow::Result<Event>>,
-        count: usize,
-    ) -> Vec<PathBuf> {
-        iter::repeat_with(|| {
-            let event = events
-                .recv_timeout(EVENT_DELAY)
-                .expect("No event received")
-                .expect("Event stream error");
-            let Event::FileDownSyncDone { path, .. } = event else {
-                panic!("Unexpected event: {event:?}");
-            };
-            path
-        })
-        .take(count)
-        .collect()
+    /// Consume `count` events of the stream
+    fn recv_events(events: &mpsc::Receiver<anyhow::Result<Event>>, count: usize) -> Vec<Event> {
+        iter::repeat_with(|| events.recv_timeout(EVENT_DELAY).unwrap().unwrap())
+            .take(count)
+            .collect()
+    }
+
+    /// Event of a file successfully synced down in the folder of the tests
+    fn file_down_sync_done(item: &str) -> Event {
+        Event::FileDownSyncDone {
+            path: PathBuf::from(item),
+            folder: PathBuf::from(FOLDER_PATH),
+        }
     }
 
     /// Events that occurred before we connected must not trigger hooks
     #[test]
     fn no_historical_event_replay_on_startup() {
-        let server = TestSyncthingServer::start(&[("fid1", "/data/folder")]);
-        server.push_event("ItemFinished", item_finished("old.txt", "fid1"));
+        let server = TestSyncthingServer::start(&[(FOLDER_ID, FOLDER_PATH)]);
+        server.push_event("ItemFinished", item_finished("old.txt", FOLDER_ID));
 
         let events = stream_events(connect(server.url()), None);
 
-        assert!(
-            events.recv_timeout(NO_EVENT_DELAY).is_err(),
-            "Historical event was replayed"
-        );
+        assert!(events.recv_timeout(NO_EVENT_DELAY).is_err());
 
         // Events occurring while connected are still delivered
-        server.push_event("ItemFinished", item_finished("new.txt", "fid1"));
-        let event = events
-            .recv_timeout(EVENT_DELAY)
-            .expect("No event received")
-            .expect("Event stream error");
-        let Event::FileDownSyncDone { path, folder } = event else {
-            panic!("Unexpected event: {event:?}");
-        };
-        assert_eq!(path, PathBuf::from("new.txt"));
-        assert_eq!(folder, PathBuf::from("/data/folder"));
+        server.push_event("ItemFinished", item_finished("new.txt", FOLDER_ID));
+        assert_eq!(recv_events(&events, 1), [file_down_sync_done("new.txt")]);
 
         // The event ids of a subscription are only comparable with those of the same
         // subscription, so the request priming the cursor must use the polled filter
-        let requests = server.event_requests();
-        assert!(
-            requests
-                .iter()
-                .all(|r| r.contains("events=ItemFinished%2CFolderSummary")),
-            "Requests do not all poll the same subscription: {requests:?}"
-        );
+        assert!(server
+            .event_requests()
+            .iter()
+            .all(|r| r.contains("events=ItemFinished%2CFolderSummary")));
     }
 
     /// Events buffered by the server between two polls must all be delivered
     #[test]
     fn no_event_loss_on_burst() {
-        let server = TestSyncthingServer::start(&[("fid1", "/data/folder")]);
+        let server = TestSyncthingServer::start(&[(FOLDER_ID, FOLDER_PATH)]);
 
         let events = stream_events(connect(server.url()), None);
 
@@ -768,34 +727,34 @@ mod tests {
         // events are not mistaken for events that occurred before we connected
         server.wait_event_requests(2);
         let items = ["1.txt", "2.txt", "3.txt"];
-        server.push_events(&items.map(|item| ("ItemFinished", item_finished(item, "fid1"))));
+        server.push_events(&items.map(|item| ("ItemFinished", item_finished(item, FOLDER_ID))));
 
         assert_eq!(
-            recv_synced_files(&events, items.len()),
-            items.map(PathBuf::from)
+            recv_events(&events, items.len()),
+            items.map(file_down_sync_done)
         );
     }
 
     /// Events that occurred while disconnected must be processed when the connection is back
     #[test]
     fn resume_event_stream_after_reconnection() {
-        let server = TestSyncthingServer::start(&[("fid1", "/data/folder")]);
+        let server = TestSyncthingServer::start(&[(FOLDER_ID, FOLDER_PATH)]);
         let items = ["1.txt", "2.txt", "3.txt"];
-        server.push_events(&items.map(|item| ("ItemFinished", item_finished(item, "fid1"))));
+        server.push_events(&items.map(|item| ("ItemFinished", item_finished(item, FOLDER_ID))));
 
         // The previous connection consumed the first event before it was lost
         let events = stream_events(connect(server.url()), Some(cursor(SERVER_START_TIME, 1)));
 
         assert_eq!(
-            recv_synced_files(&events, 2),
-            ["2.txt", "3.txt"].map(PathBuf::from)
+            recv_events(&events, 2),
+            ["2.txt", "3.txt"].map(file_down_sync_done)
         );
     }
 
     /// An item the sync did not update as a local file must not be reported as synced down
     #[test]
     fn ignore_item_finished_of_non_updated_file() {
-        let server = TestSyncthingServer::start(&[("fid1", "/data/folder")]);
+        let server = TestSyncthingServer::start(&[(FOLDER_ID, FOLDER_PATH)]);
 
         let events = stream_events(connect(server.url()), None);
 
@@ -805,7 +764,7 @@ mod tests {
                 "ItemFinished",
                 item_finished_data(
                     "failed.txt",
-                    "fid1",
+                    FOLDER_ID,
                     Some("no space left"),
                     "file",
                     "update",
@@ -813,30 +772,27 @@ mod tests {
             ),
             (
                 "ItemFinished",
-                item_finished_data("deleted.txt", "fid1", None, "file", "delete"),
+                item_finished_data("deleted.txt", FOLDER_ID, None, "file", "delete"),
             ),
             (
                 "ItemFinished",
-                item_finished_data("chmod.txt", "fid1", None, "file", "metadata"),
+                item_finished_data("chmod.txt", FOLDER_ID, None, "file", "metadata"),
             ),
             (
                 "ItemFinished",
-                item_finished_data("subdir", "fid1", None, "dir", "update"),
+                item_finished_data("subdir", FOLDER_ID, None, "dir", "update"),
             ),
-            ("ItemFinished", item_finished("ok.txt", "fid1")),
+            ("ItemFinished", item_finished("ok.txt", FOLDER_ID)),
         ]);
 
-        assert_eq!(recv_synced_files(&events, 1), [PathBuf::from("ok.txt")]);
-        assert!(
-            events.recv_timeout(NO_EVENT_DELAY).is_err(),
-            "Unexpected event"
-        );
+        assert_eq!(recv_events(&events, 1), [file_down_sync_done("ok.txt")]);
+        assert!(events.recv_timeout(NO_EVENT_DELAY).is_err());
     }
 
     /// A server closing the connection must be reported as gone, so the main loop reconnects
     #[test]
     fn server_gone_on_connection_close() {
-        let server = TestSyncthingServer::start(&[("fid1", "/data/folder")]);
+        let server = TestSyncthingServer::start(&[(FOLDER_ID, FOLDER_PATH)]);
         let relay = VanishingRelay::start(&server.url());
 
         let events = stream_events(connect(relay.url()), None);
@@ -846,22 +802,16 @@ mod tests {
         server.wait_event_requests(2);
         relay.vanish();
 
-        let err = events
-            .recv_timeout(EVENT_DELAY)
-            .expect("No event received")
-            .expect_err("Server disconnection was not reported");
-        assert!(
-            err.downcast_ref::<ServerGone>().is_some(),
-            "Unexpected error: {err:?}"
-        );
+        let err = events.recv_timeout(EVENT_DELAY).unwrap().unwrap_err();
+        assert!(err.downcast_ref::<ServerGone>().is_some());
     }
 
     /// A server that restarted numbers its events from scratch, its whole buffer must be processed
     #[test]
     fn restart_event_stream_after_server_restart() {
-        let server = TestSyncthingServer::start(&[("fid1", "/data/folder")]);
+        let server = TestSyncthingServer::start(&[(FOLDER_ID, FOLDER_PATH)]);
         let items = ["1.txt", "2.txt"];
-        server.push_events(&items.map(|item| ("ItemFinished", item_finished(item, "fid1"))));
+        server.push_events(&items.map(|item| ("ItemFinished", item_finished(item, FOLDER_ID))));
 
         // The previous connection was to another server instance, whose ids are unrelated to
         // those of this one, even when they are within the range of its event buffer
@@ -871,8 +821,8 @@ mod tests {
         );
 
         assert_eq!(
-            recv_synced_files(&events, items.len()),
-            items.map(PathBuf::from)
+            recv_events(&events, items.len()),
+            items.map(file_down_sync_done)
         );
     }
 }
