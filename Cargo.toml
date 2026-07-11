@@ -93,3 +93,6 @@ unused_result_ok = "warn"
 unused_trait_names = "warn"
 unwrap_used = "warn"
 verbose_file_reads = "warn"
+
+[dev-dependencies]
+tiny_http = { version = "0.12.0", default-features = false }
