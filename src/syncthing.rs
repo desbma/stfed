@@ -1,7 +1,10 @@
 //! Syncthing related code
 
 use std::{
-    collections::hash_map::{Entry, HashMap},
+    collections::{
+        hash_map::{Entry, HashMap},
+        VecDeque,
+    },
     io,
     path::PathBuf,
     sync::LazyLock,
@@ -109,14 +112,23 @@ impl Client {
     }
 
     /// Send an events request, and return the events it yielded, if any
-    fn events(&self, since: u64, timeout: Duration) -> anyhow::Result<Vec<syncthing_rest::Event>> {
+    fn events(
+        &self,
+        since: u64,
+        limit: Option<usize>,
+        timeout: Duration,
+    ) -> anyhow::Result<Vec<syncthing_rest::Event>> {
         // See https://docs.syncthing.net/dev/events.html
         let mut url = self.base_url.join("rest/events")?;
-        url.query_pairs_mut()
+        let mut query = url.query_pairs_mut();
+        query
             .append_pair("since", &since.to_string())
-            .append_pair("limit", "1")
             .append_pair("events", &EVENT_TYPES.join(","))
             .append_pair("timeout", &timeout.as_secs().to_string());
+        if let Some(limit) = limit {
+            query.append_pair("limit", &limit.to_string());
+        }
+        drop(query);
         log::debug!("GET {:?}", url.to_string());
         let response = self
             .session
@@ -141,18 +153,10 @@ impl Client {
     fn latest_event_id(&self) -> anyhow::Result<Option<u64>> {
         // A null timeout returns the buffered events immediately, instead of waiting for a
         // new one when there is none, which would swallow it
-        Ok(self.events(0, Duration::ZERO)?.last().map(|evt| evt.id))
-    }
-
-    /// Get a single event, no filtering is done at this level
-    fn event(&self, since: u64) -> anyhow::Result<syncthing_rest::Event> {
-        loop {
-            let mut events = self.events(since, REST_TIMEOUT_EVENT_STREAM)?;
-            assert!(events.len() <= 1);
-            if let Some(event) = events.pop() {
-                return Ok(event);
-            }
-        }
+        Ok(self
+            .events(0, Some(1), Duration::ZERO)?
+            .last()
+            .map(|evt| evt.id))
     }
 }
 
@@ -162,6 +166,8 @@ pub(crate) struct FolderEventIterator<'a> {
     client: &'a Client,
     /// Last event id, `None` until the cursor has been primed
     last_id: Option<u64>,
+    /// Events received from the server, not yet consumed
+    pending: VecDeque<syncthing_rest::Event>,
     /// Last state change for folder to avoid duplicates
     folder_state_change_time: HashMap<String, String>,
 }
@@ -172,6 +178,7 @@ impl<'a> FolderEventIterator<'a> {
         Self {
             client,
             last_id: None,
+            pending: VecDeque::new(),
             folder_state_change_time: HashMap::new(),
         }
     }
@@ -192,79 +199,81 @@ impl Iterator for FolderEventIterator<'_> {
                 }
                 continue;
             };
-            let new_evt_res = self.client.event(last_id);
-            return match new_evt_res {
-                Ok(new_evt) => {
-                    // Update last id
-                    self.last_id = Some(new_evt.id);
+            let Some(new_evt) = self.pending.pop_front() else {
+                // Fetch all the events that occurred since the last one, otherwise a burst of
+                // events would be truncated to its most recent one, and the others lost
+                match self.client.events(last_id, None, REST_TIMEOUT_EVENT_STREAM) {
+                    Ok(events) => self.pending.extend(events),
+                    Err(err) => return Some(Err(err)),
+                }
+                continue;
+            };
 
-                    match new_evt.data {
-                        syncthing_rest::EventData::ItemFinished(evt_data) => {
-                            let folder_path = self
-                                .client
-                                .folder_map
-                                .get(&evt_data.folder)
-                                .expect("Unknown folder id");
-                            Some(Ok(Event::FileDownSyncDone {
-                                path: PathBuf::from(evt_data.item),
-                                folder: folder_path.to_owned(),
-                            }))
-                        }
-                        syncthing_rest::EventData::FolderSummary(evt_data) => {
-                            if evt_data.summary.need_total_items > 0 {
-                                // Not complete
+            // Update last id
+            self.last_id = Some(new_evt.id);
+
+            return match new_evt.data {
+                syncthing_rest::EventData::ItemFinished(evt_data) => {
+                    let folder_path = self
+                        .client
+                        .folder_map
+                        .get(&evt_data.folder)
+                        .expect("Unknown folder id");
+                    Some(Ok(Event::FileDownSyncDone {
+                        path: PathBuf::from(evt_data.item),
+                        folder: folder_path.to_owned(),
+                    }))
+                }
+                syncthing_rest::EventData::FolderSummary(evt_data) => {
+                    if evt_data.summary.need_total_items > 0 {
+                        // Not complete
+                        continue;
+                    }
+                    let changed = evt_data.summary.state_changed;
+                    match self.folder_state_change_time.entry(evt_data.folder.clone()) {
+                        Entry::Occupied(mut e) => {
+                            if e.get() == &changed {
+                                // Duplicate event
                                 continue;
                             }
-                            let changed = evt_data.summary.state_changed;
-                            match self.folder_state_change_time.entry(evt_data.folder.clone()) {
-                                Entry::Occupied(mut e) => {
-                                    if e.get() == &changed {
-                                        // Duplicate event
-                                        continue;
-                                    }
-                                    e.insert(changed);
-                                }
-                                Entry::Vacant(e) => {
-                                    e.insert(changed);
-                                }
-                            }
-                            let folder_path = self
-                                .client
-                                .folder_map
-                                .get(&evt_data.folder)
-                                .expect("Unknown folder id");
-                            Some(Ok(Event::FolderDownSyncDone {
-                                folder: folder_path.to_owned(),
-                            }))
+                            e.insert(changed);
                         }
-                        syncthing_rest::EventData::LocalChangeDetected(evt_data) => {
-                            // see https://github.com/syncthing/syncthing/issues/6121#issuecomment-549077477
-                            if (evt_data.item_type == "file")
-                                && (evt_data.action == "modified")
-                                && (evt_data.path.contains(".sync-conflict-"))
-                            {
-                                let folder_path = self
-                                    .client
-                                    .folder_map
-                                    .get(&evt_data.folder)
-                                    .expect("Unknown folder id");
-                                Some(Ok(Event::FileConflict {
-                                    path: PathBuf::from(evt_data.path),
-                                    folder: folder_path.to_owned(),
-                                }))
-                            } else {
-                                continue;
-                            }
+                        Entry::Vacant(e) => {
+                            e.insert(changed);
                         }
-                        syncthing_rest::EventData::ConfigSaved(_) => {
-                            Some(Err(ServerConfigChanged::ConfigSaved.into()))
-                        }
-                        _ => unimplemented!(),
+                    }
+                    let folder_path = self
+                        .client
+                        .folder_map
+                        .get(&evt_data.folder)
+                        .expect("Unknown folder id");
+                    Some(Ok(Event::FolderDownSyncDone {
+                        folder: folder_path.to_owned(),
+                    }))
+                }
+                syncthing_rest::EventData::LocalChangeDetected(evt_data) => {
+                    // see https://github.com/syncthing/syncthing/issues/6121#issuecomment-549077477
+                    if (evt_data.item_type == "file")
+                        && (evt_data.action == "modified")
+                        && (evt_data.path.contains(".sync-conflict-"))
+                    {
+                        let folder_path = self
+                            .client
+                            .folder_map
+                            .get(&evt_data.folder)
+                            .expect("Unknown folder id");
+                        Some(Ok(Event::FileConflict {
+                            path: PathBuf::from(evt_data.path),
+                            folder: folder_path.to_owned(),
+                        }))
+                    } else {
+                        continue;
                     }
                 }
-
-                // Propagate error
-                Err(e) => Some(Err(e)),
+                syncthing_rest::EventData::ConfigSaved(_) => {
+                    Some(Err(ServerConfigChanged::ConfigSaved.into()))
+                }
+                _ => unimplemented!(),
             };
         }
     }
@@ -355,7 +364,7 @@ mod tests {
     struct TestSyncthingServer {
         /// Server base URL
         url: url::Url,
-        /// Event buffer, with a condition variable signaled when an event is emitted
+        /// Server state, with a condition variable signaled when it changes
         state: Arc<(Mutex<State>, Condvar)>,
         /// Kept alive to serve requests for as long as the server is used
         _server: Arc<tiny_http::Server>,
@@ -408,21 +417,39 @@ mod tests {
 
         /// Emit an event, waking up any pending long polling request
         fn push_event(&self, event_type: &str, data: serde_json::Value) {
-            let (state, new_event) = &*self.state;
-            state
-                .lock()
-                .expect("Server state poisoned")
-                .events
-                .push(BufferedEvent {
-                    event_type: event_type.to_owned(),
-                    data,
+            self.push_events(&[(event_type, data)]);
+        }
+
+        /// Emit events, buffering them all before waking up any pending long polling request
+        fn push_events(&self, events: &[(&str, serde_json::Value)]) {
+            let (state, state_changed) = &*self.state;
+            let mut state = state.lock().expect("Server state poisoned");
+            for (event_type, data) in events {
+                state.events.push(BufferedEvent {
+                    event_type: (*event_type).to_owned(),
+                    data: data.clone(),
                 });
-            new_event.notify_all();
+            }
+            drop(state);
+            state_changed.notify_all();
+        }
+
+        /// Wait until the server has received `count` events requests
+        fn wait_event_requests(&self, count: usize) {
+            let (state, state_changed) = &*self.state;
+            let mut state = state.lock().expect("Server state poisoned");
+            while state.event_requests.len() < count {
+                let (new_state, wait) = state_changed
+                    .wait_timeout(state, EVENT_DELAY)
+                    .expect("Server state poisoned");
+                assert!(!wait.timed_out(), "Missing events requests");
+                state = new_state;
+            }
         }
 
         /// Query string of each events request received so far
         fn event_requests(&self) -> Vec<String> {
-            let (state, _new_event) = &*self.state;
+            let (state, _state_changed) = &*self.state;
             state
                 .lock()
                 .expect("Server state poisoned")
@@ -466,11 +493,12 @@ mod tests {
             }
         }
 
-        let (state, new_event) = state;
+        let (state, state_changed) = state;
         let mut state = state.lock().expect("Server state poisoned");
         state
             .event_requests
             .push(url.query().unwrap_or_default().to_owned());
+        state_changed.notify_all();
 
         let deadline = Instant::now() + timeout;
         loop {
@@ -482,7 +510,7 @@ mod tests {
             if remaining.is_zero() {
                 return "[]".to_owned();
             }
-            state = new_event
+            state = state_changed
                 .wait_timeout(state, remaining)
                 .expect("Server state poisoned")
                 .0;
@@ -551,5 +579,34 @@ mod tests {
                 .all(|r| r.contains("events=ItemFinished%2CFolderSummary")),
             "Requests do not all poll the same subscription: {requests:?}"
         );
+    }
+
+    /// Events buffered by the server between two polls must all be delivered
+    #[test]
+    fn no_event_loss_on_burst() {
+        let server = TestSyncthingServer::start(&[("fid1", "/data/folder")]);
+
+        let cfg = config::Config {
+            url: server.url(),
+            api_key: "apikey".to_owned(),
+        };
+        let events = stream_events(Client::new(&cfg).expect("Failed to build client"));
+
+        // Wait for the request priming the cursor and the first polling one, so that the
+        // events are not mistaken for events that occurred before we connected
+        server.wait_event_requests(2);
+        let items = ["1.txt", "2.txt", "3.txt"];
+        server.push_events(&items.map(|item| ("ItemFinished", item_finished(item, "fid1"))));
+
+        for item in items {
+            let event = events
+                .recv_timeout(EVENT_DELAY)
+                .unwrap_or_else(|_| panic!("No event received for {item:?}"))
+                .expect("Event stream error");
+            let Event::FileDownSyncDone { path, .. } = event else {
+                panic!("Unexpected event: {event:?}");
+            };
+            assert_eq!(path, PathBuf::from(item));
+        }
     }
 }
