@@ -84,16 +84,14 @@ fn main() -> anyhow::Result<()> {
                         Err(err) => {
                             if let Some(err) = err.downcast_ref::<syncthing::ServerGone>() {
                                 log::warn!(
-                                    "Syncthing server is gone, will restart main loop. {:?}",
-                                    err
+                                    "Syncthing server is gone, will restart main loop. {err:?}"
                                 );
                                 break;
                             } else if let Some(err) =
                                 err.downcast_ref::<syncthing::ServerConfigChanged>()
                             {
                                 log::warn!(
-                                    "Syncthing server configuration changed, will restart main loop. {:?}",
-                                    err
+                                    "Syncthing server configuration changed, will restart main loop. {err:?}"
                                 );
                                 break;
                             }
@@ -102,7 +100,7 @@ fn main() -> anyhow::Result<()> {
                         }
                         Ok(event) => event,
                     };
-                    log::info!("New event: {:?}", event);
+                    log::info!("New event: {event:?}");
 
                     // Dispatch event
                     match event {
@@ -163,8 +161,7 @@ fn main() -> anyhow::Result<()> {
             Err(ref err) => match err.root_cause().downcast_ref::<ureq::Error>() {
                 Some(ureq::Error::Io(err2)) if err2.kind() == io::ErrorKind::ConnectionRefused => {
                     log::warn!(
-                        "Syncthing server connection failed, will restart main loop. {:?}",
-                        err
+                        "Syncthing server connection failed, will restart main loop. {err:?}"
                     );
                 }
                 _ => {
@@ -173,7 +170,7 @@ fn main() -> anyhow::Result<()> {
             },
         }
 
-        log::info!("Will reconnect in {:?}", RECONNECT_DELAY);
+        log::info!("Will reconnect in {RECONNECT_DELAY:?}");
         thread::sleep(RECONNECT_DELAY);
     }
 }

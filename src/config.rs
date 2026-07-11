@@ -44,7 +44,7 @@ impl Config {
             .find_state_file("config.xml")
             .or_else(|| xdg_dirs.find_config_file("config.xml"))
             .context("Unable fo find Synthing config file")?;
-        log::debug!("Found Syncthing config in {:?}", st_config_filepath);
+        log::debug!("Found Syncthing config in {st_config_filepath:?}");
         let st_config_xml = fs::read_to_string(st_config_filepath)?;
         let st_config: SyncthingXmlConfig = quick_xml::de::from_str(&st_config_xml)?;
 
@@ -82,7 +82,10 @@ pub(crate) struct FolderConfig {
 pub(crate) struct NormalizedPath(PathBuf);
 
 impl<'de> serde::Deserialize<'de> for NormalizedPath {
-    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
         let pb = PathBuf::deserialize(deserializer)?;
         pb.as_path().try_into().map_err(serde::de::Error::custom)
     }
@@ -171,10 +174,10 @@ pub(crate) fn parse() -> anyhow::Result<(Config, FolderConfig)> {
     let config_filepath = xdg_dirs.find_config_file("config.toml");
 
     let config = if let Some(config_filepath) = config_filepath {
-        log::debug!("Config filepath: {:?}", config_filepath);
+        log::debug!("Config filepath: {config_filepath:?}");
 
         let toml_data = fs::read_to_string(config_filepath)?;
-        log::trace!("Config data: {:?}", toml_data);
+        log::trace!("Config data: {toml_data:?}");
 
         toml::from_str(&toml_data)?
     } else {
@@ -182,18 +185,18 @@ pub(crate) fn parse() -> anyhow::Result<(Config, FolderConfig)> {
         Config::default()
     };
 
-    log::trace!("Config: {:?}", config);
+    log::trace!("Config: {config:?}");
 
     let hooks_filepath = xdg_dirs
         .find_config_file("hooks.toml")
         .ok_or_else(|| anyhow::anyhow!("Unable to find hooks file"))?;
-    log::debug!("Hooks filepath: {:?}", hooks_filepath);
+    log::debug!("Hooks filepath: {hooks_filepath:?}");
 
     let toml_data = fs::read_to_string(hooks_filepath)?;
-    log::trace!("Hooks data: {:?}", toml_data);
+    log::trace!("Hooks data: {toml_data:?}");
     let hooks = toml::from_str(&toml_data)?;
 
-    log::trace!("Hooks: {:?}", hooks);
+    log::trace!("Hooks: {hooks:?}");
 
     Ok((config, hooks))
 }

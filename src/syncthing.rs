@@ -115,7 +115,7 @@ impl Client {
 
     /// Send a request to an endpoint, and return the response body
     fn get(session: &ureq::Agent, url: &url::Url, api_key: &str) -> anyhow::Result<String> {
-        log::debug!("GET {:?}", url.to_string());
+        log::debug!("GET {url:?}", url = url.to_string());
         let json_str = session
             .get(url.as_ref())
             .config()
@@ -125,7 +125,7 @@ impl Client {
             .call()?
             .into_body()
             .read_to_string()?;
-        log::trace!("{}", json_str);
+        log::trace!("{json_str}");
         Ok(json_str)
     }
 
@@ -164,7 +164,7 @@ impl Client {
             query.append_pair("limit", &limit.to_string());
         }
         drop(query);
-        log::debug!("GET {:?}", url.to_string());
+        log::debug!("GET {url:?}", url = url.to_string());
         let response = self
             .session
             .get(url.as_ref())
@@ -183,7 +183,7 @@ impl Client {
             Err(err) => return Err(err.into()),
             Ok(json_str) => json_str,
         };
-        log::trace!("{}", json_str);
+        log::trace!("{json_str}");
         Ok(serde_json::from_str(&json_str)?)
     }
 
@@ -335,13 +335,28 @@ impl Iterator for FolderEventIterator<'_> {
 }
 
 /// Syncthing event, see `config::FolderEvent` for meaning of each event
-#[expect(clippy::missing_docs_in_private_items)]
 #[derive(Debug)]
 #[cfg_attr(test, derive(Eq, PartialEq))]
 pub(crate) enum Event {
-    FileDownSyncDone { path: PathBuf, folder: PathBuf },
-    FolderDownSyncDone { folder: PathBuf },
-    FileConflict { path: PathBuf, folder: PathBuf },
+    /// See `config::FolderEvent::FileDownSyncDone`
+    FileDownSyncDone {
+        /// Path of the file, relative to the folder
+        path: PathBuf,
+        /// Local path of the folder
+        folder: PathBuf,
+    },
+    /// See `config::FolderEvent::FolderDownSyncDone`
+    FolderDownSyncDone {
+        /// Local path of the folder
+        folder: PathBuf,
+    },
+    /// See `config::FolderEvent::FileConflict`
+    FileConflict {
+        /// Path of the conflict file, relative to the folder
+        path: PathBuf,
+        /// Local path of the folder
+        folder: PathBuf,
+    },
 }
 
 #[cfg(test)]

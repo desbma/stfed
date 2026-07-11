@@ -40,12 +40,7 @@ pub(crate) fn run(
         running_hooks_locked.insert(hook_id.clone());
         drop(running_hooks_locked);
 
-        log::info!(
-            "Running hook: {:?} with path {:?} and folder {:?}",
-            hook,
-            path,
-            folder
-        );
+        log::info!("Running hook: {hook:?} with path {path:?} and folder {folder:?}");
 
         let child = Command::new(&hook.command[0])
             .args(&hook.command[1..])
