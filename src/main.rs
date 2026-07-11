@@ -67,13 +67,18 @@ fn main() -> anyhow::Result<()> {
         .name("reaper".to_owned())
         .spawn(move || -> anyhow::Result<()> { hook::reaper(&reaper_rx, &running_hooks_reaper) })?;
 
+    // Position reached in the event stream, to resume it where it stopped when the connection
+    // is lost
+    let mut cursor = None;
+
     loop {
         // Setup client
         let client_res = syncthing::Client::new(&cfg);
         match client_res {
             Ok(client) => {
                 // Event loop
-                for event in client.iter_events() {
+                let mut events = client.iter_events(cursor.as_ref());
+                for event in &mut events {
                     // Handle special events
                     let event = match &event {
                         Err(err) => {
@@ -152,6 +157,7 @@ fn main() -> anyhow::Result<()> {
                         }
                     }
                 }
+                cursor = events.cursor();
             }
             #[expect(clippy::ref_patterns)]
             Err(ref err) => match err.root_cause().downcast_ref::<io::Error>() {

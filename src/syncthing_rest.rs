@@ -436,4 +436,6 @@ pub(crate) struct SystemConfigFolder {
 pub(crate) struct SystemStatus {
     #[serde(rename = "myID")]
     pub my_id: String,
+    #[serde(rename = "startTime")]
+    pub start_time: String,
 }

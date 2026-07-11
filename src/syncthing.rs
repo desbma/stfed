@@ -40,6 +40,16 @@ pub(crate) struct Client {
     session: ureq::Agent,
     /// Folder id to path
     folder_map: HashMap<String, PathBuf>,
+    /// Start time of the server, changing each time it restarts
+    start_time: String,
+}
+
+/// Position in the event stream of a server instance
+pub(crate) struct Cursor {
+    /// Start time of the server instance the event ids refer to
+    server_start_time: String,
+    /// Id of the last consumed event
+    last_id: u64,
 }
 
 /// API timeout for long event requests
@@ -80,16 +90,16 @@ impl Client {
 
         // Get system config to build folder map
         let base_url = cfg.url.clone();
-        let url = base_url.join("rest/system/config")?;
-        log::debug!("GET {:?}", url);
-        let json_str = session
-            .get(url.as_ref())
-            .timeout(HTTP_TIMEOUT)
-            .set(HEADER_API_KEY, &cfg.api_key)
-            .call()?
-            .into_string()?;
-        log::trace!("{}", json_str);
-        let system_config: syncthing_rest::SystemConfig = serde_json::from_str(&json_str)?;
+        let system_config: syncthing_rest::SystemConfig = serde_json::from_str(&Self::get(
+            &session,
+            &base_url.join("rest/system/config")?,
+            &cfg.api_key,
+        )?)?;
+        let system_status: syncthing_rest::SystemStatus = serde_json::from_str(&Self::get(
+            &session,
+            &base_url.join("rest/system/status")?,
+            &cfg.api_key,
+        )?)?;
 
         // Build folder map
         let folder_map = system_config
@@ -103,12 +113,38 @@ impl Client {
             session,
             api_key: cfg.api_key.clone(),
             folder_map,
+            start_time: system_status.start_time,
         })
     }
 
-    /// Iterator over infinite stream of events
-    pub(crate) fn iter_events(&self) -> FolderEventIterator<'_> {
-        FolderEventIterator::new(self)
+    /// Send a request to an endpoint, and return the response body
+    fn get(session: &ureq::Agent, url: &url::Url, api_key: &str) -> anyhow::Result<String> {
+        log::debug!("GET {:?}", url.to_string());
+        let json_str = session
+            .get(url.as_ref())
+            .timeout(HTTP_TIMEOUT)
+            .set(HEADER_API_KEY, api_key)
+            .call()?
+            .into_string()?;
+        log::trace!("{}", json_str);
+        Ok(json_str)
+    }
+
+    /// Iterator over infinite stream of events, resuming from `cursor` if set
+    pub(crate) fn iter_events(&self, cursor: Option<&Cursor>) -> FolderEventIterator<'_> {
+        FolderEventIterator::new(self, self.resume_id(cursor))
+    }
+
+    /// Event id to resume the stream from, `None` to start after the events already buffered
+    fn resume_id(&self, cursor: Option<&Cursor>) -> Option<u64> {
+        let cursor = cursor?;
+        if cursor.server_start_time == self.start_time {
+            Some(cursor.last_id)
+        } else {
+            // The server numbers the events of a subscription from scratch when it restarts, so
+            // the ids of a previous instance are meaningless: process its whole event buffer
+            Some(0)
+        }
     }
 
     /// Send an events request, and return the events it yielded, if any
@@ -164,7 +200,7 @@ impl Client {
 pub(crate) struct FolderEventIterator<'a> {
     /// API client
     client: &'a Client,
-    /// Last event id, `None` until the cursor has been primed
+    /// Id of the last consumed event, `None` until the cursor has been primed
     last_id: Option<u64>,
     /// Events received from the server, not yet consumed
     pending: VecDeque<syncthing_rest::Event>,
@@ -174,13 +210,21 @@ pub(crate) struct FolderEventIterator<'a> {
 
 impl<'a> FolderEventIterator<'a> {
     /// Constructor
-    fn new(client: &'a Client) -> Self {
+    fn new(client: &'a Client, resume_id: Option<u64>) -> Self {
         Self {
             client,
-            last_id: None,
+            last_id: resume_id,
             pending: VecDeque::new(),
             folder_state_change_time: HashMap::new(),
         }
+    }
+
+    /// Position reached in the event stream, to resume it after a reconnection
+    pub(crate) fn cursor(&self) -> Option<Cursor> {
+        self.last_id.map(|last_id| Cursor {
+            server_start_time: self.client.start_time.clone(),
+            last_id,
+        })
     }
 }
 
@@ -291,6 +335,7 @@ pub(crate) enum Event {
 #[cfg(test)]
 mod tests {
     use std::{
+        iter,
         sync::{mpsc, Arc, Condvar, Mutex},
         thread,
         time::Instant,
@@ -305,6 +350,12 @@ mod tests {
 
     /// Delay to wait for an event that is expected to be received
     const EVENT_DELAY: Duration = Duration::from_secs(5);
+
+    /// Start time of the server the tests connect to
+    const SERVER_START_TIME: &str = "2026-07-11T12:00:00Z";
+
+    /// Start time of the server instance a previous connection was made to
+    const PREVIOUS_SERVER_START_TIME: &str = "2026-07-11T11:00:00Z";
 
     /// Event buffered by the server
     struct BufferedEvent {
@@ -466,6 +517,11 @@ mod tests {
             .expect("Invalid request URL");
         let body = match url.path() {
             "/rest/system/config" => system_config.to_owned(),
+            "/rest/system/status" => json!({
+                "myID": "TESTDEV-ICEID",
+                "startTime": SERVER_START_TIME,
+            })
+            .to_string(),
             "/rest/events" => events(state, &url),
             path => panic!("Unexpected request path {path:?}"),
         };
@@ -529,10 +585,13 @@ mod tests {
     }
 
     /// Stream events in a background thread, to be able to assert on what is received or not
-    fn stream_events(client: Client) -> mpsc::Receiver<anyhow::Result<Event>> {
+    fn stream_events(
+        client: Client,
+        cursor: Option<Cursor>,
+    ) -> mpsc::Receiver<anyhow::Result<Event>> {
         let (event_tx, event_rx) = mpsc::channel();
         thread::spawn(move || {
-            for event in client.iter_events() {
+            for event in client.iter_events(cursor.as_ref()) {
                 if event_tx.send(event).is_err() {
                     break;
                 }
@@ -541,17 +600,50 @@ mod tests {
         event_rx
     }
 
+    /// Position left in the event stream by a connection to the server instance started at
+    /// `server_start_time`
+    fn cursor(server_start_time: &str, last_id: u64) -> Cursor {
+        Cursor {
+            server_start_time: server_start_time.to_owned(),
+            last_id,
+        }
+    }
+
+    /// Client connected to a server, with the folder of the tests already set up
+    fn connect(server: &TestSyncthingServer) -> Client {
+        let cfg = config::Config {
+            url: server.url(),
+            api_key: "apikey".to_owned(),
+        };
+        Client::new(&cfg).expect("Failed to build client")
+    }
+
+    /// Consume the events of a file sync, and return the path of each synced file
+    fn recv_synced_files(
+        events: &mpsc::Receiver<anyhow::Result<Event>>,
+        count: usize,
+    ) -> Vec<PathBuf> {
+        iter::repeat_with(|| {
+            let event = events
+                .recv_timeout(EVENT_DELAY)
+                .expect("No event received")
+                .expect("Event stream error");
+            let Event::FileDownSyncDone { path, .. } = event else {
+                panic!("Unexpected event: {event:?}");
+            };
+            path
+        })
+        .take(count)
+        .collect()
+    }
+
     /// Events that occurred before we connected must not trigger hooks
     #[test]
     fn no_historical_event_replay_on_startup() {
         let server = TestSyncthingServer::start(&[("fid1", "/data/folder")]);
         server.push_event("ItemFinished", item_finished("old.txt", "fid1"));
 
-        let cfg = config::Config {
-            url: server.url(),
-            api_key: "apikey".to_owned(),
-        };
-        let events = stream_events(Client::new(&cfg).expect("Failed to build client"));
+        let events = stream_events(connect(&server), None);
 
         assert!(
             events.recv_timeout(NO_EVENT_DELAY).is_err(),
@@ -586,11 +678,7 @@ mod tests {
     fn no_event_loss_on_burst() {
         let server = TestSyncthingServer::start(&[("fid1", "/data/folder")]);
 
-        let cfg = config::Config {
-            url: server.url(),
-            api_key: "apikey".to_owned(),
-        };
-        let events = stream_events(Client::new(&cfg).expect("Failed to build client"));
+        let events = stream_events(connect(&server), None);
 
         // Wait for the request priming the cursor and the first polling one, so that the
         // events are not mistaken for events that occurred before we connected
@@ -598,15 +686,45 @@ mod tests {
         let items = ["1.txt", "2.txt", "3.txt"];
         server.push_events(&items.map(|item| ("ItemFinished", item_finished(item, "fid1"))));
 
-        for item in items {
-            let event = events
-                .recv_timeout(EVENT_DELAY)
-                .unwrap_or_else(|_| panic!("No event received for {item:?}"))
-                .expect("Event stream error");
-            let Event::FileDownSyncDone { path, .. } = event else {
-                panic!("Unexpected event: {event:?}");
-            };
-            assert_eq!(path, PathBuf::from(item));
-        }
+        assert_eq!(
+            recv_synced_files(&events, items.len()),
+            items.map(PathBuf::from)
+        );
+    }
+
+    /// Events that occurred while disconnected must be processed when the connection is back
+    #[test]
+    fn resume_event_stream_after_reconnection() {
+        let server = TestSyncthingServer::start(&[("fid1", "/data/folder")]);
+        let items = ["1.txt", "2.txt", "3.txt"];
+        server.push_events(&items.map(|item| ("ItemFinished", item_finished(item, "fid1"))));
+
+        // The previous connection consumed the first event before it was lost
+        let events = stream_events(connect(&server), Some(cursor(SERVER_START_TIME, 1)));
+
+        assert_eq!(
+            recv_synced_files(&events, 2),
+            ["2.txt", "3.txt"].map(PathBuf::from)
+        );
+    }
+
+    /// A server that restarted numbers its events from scratch, its whole buffer must be processed
+    #[test]
+    fn restart_event_stream_after_server_restart() {
+        let server = TestSyncthingServer::start(&[("fid1", "/data/folder")]);
+        let items = ["1.txt", "2.txt"];
+        server.push_events(&items.map(|item| ("ItemFinished", item_finished(item, "fid1"))));
+
+        // The previous connection was to another server instance, whose ids are unrelated to
+        // those of this one, even when they are within the range of its event buffer
+        let events = stream_events(
+            connect(&server),
+            Some(cursor(PREVIOUS_SERVER_START_TIME, 1)),
+        );
+
+        assert_eq!(
+            recv_synced_files(&events, items.len()),
+            items.map(PathBuf::from)
+        );
     }
 }
