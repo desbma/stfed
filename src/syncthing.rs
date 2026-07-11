@@ -161,9 +161,13 @@ impl Client {
                 Ok(resp) => resp,
             };
             log::trace!("{}", json_str);
-            let mut events: Vec<syncthing_rest::Event> = serde_json::from_str(&json_str)?;
-            assert!(events.len() <= 1);
-            if let Some(event) = events.pop() {
+            let events: Vec<syncthing_rest::Event> = serde_json::from_str(&json_str)?;
+            if events.len() > 1 {
+                // We requested a single event: process the first one only, the others will
+                // be fetched again at the next poll once the cursor has advanced past it
+                log::warn!("Server sent {} events, expected at most 1", events.len());
+            }
+            if let Some(event) = events.into_iter().next() {
                 return Ok(event);
             }
         }
@@ -194,6 +198,7 @@ impl<'a> FolderEventIterator<'a> {
 impl Iterator for FolderEventIterator<'_> {
     type Item = anyhow::Result<Event>;
 
+    #[expect(clippy::too_many_lines)]
     fn next(&mut self) -> Option<Self::Item> {
         loop {
             // Prime the cursor on the first call: polling with since=0 would return the most
@@ -238,11 +243,14 @@ impl Iterator for FolderEventIterator<'_> {
                             {
                                 continue;
                             }
-                            let folder_path = self
-                                .client
-                                .folder_map
-                                .get(&evt_data.folder)
-                                .expect("Unknown folder id");
+                            let Some(folder_path) = self.client.folder_map.get(&evt_data.folder)
+                            else {
+                                log::warn!(
+                                    "Ignoring event for unknown folder id {:?}",
+                                    evt_data.folder
+                                );
+                                continue;
+                            };
                             Some(Ok(Event::FileDownSyncDone {
                                 path: PathBuf::from(evt_data.item),
                                 folder: folder_path.to_owned(),
@@ -266,11 +274,14 @@ impl Iterator for FolderEventIterator<'_> {
                                     e.insert(changed);
                                 }
                             }
-                            let folder_path = self
-                                .client
-                                .folder_map
-                                .get(&evt_data.folder)
-                                .expect("Unknown folder id");
+                            let Some(folder_path) = self.client.folder_map.get(&evt_data.folder)
+                            else {
+                                log::warn!(
+                                    "Ignoring event for unknown folder id {:?}",
+                                    evt_data.folder
+                                );
+                                continue;
+                            };
                             Some(Ok(Event::FolderDownSyncDone {
                                 folder: folder_path.to_owned(),
                             }))
@@ -281,11 +292,15 @@ impl Iterator for FolderEventIterator<'_> {
                                 && (evt_data.action == "modified")
                                 && (evt_data.path.contains(".sync-conflict-"))
                             {
-                                let folder_path = self
-                                    .client
-                                    .folder_map
-                                    .get(&evt_data.folder)
-                                    .expect("Unknown folder id");
+                                let Some(folder_path) =
+                                    self.client.folder_map.get(&evt_data.folder)
+                                else {
+                                    log::warn!(
+                                        "Ignoring event for unknown folder id {:?}",
+                                        evt_data.folder
+                                    );
+                                    continue;
+                                };
                                 Some(Ok(Event::FileConflict {
                                     path: PathBuf::from(evt_data.path),
                                     folder: folder_path.to_owned(),
@@ -297,7 +312,10 @@ impl Iterator for FolderEventIterator<'_> {
                         syncthing_rest::EventData::ConfigSaved(_) => {
                             Some(Err(ServerConfigChanged::ConfigSaved.into()))
                         }
-                        _ => unimplemented!(),
+                        other => {
+                            log::warn!("Ignoring unexpected event: {:?}", other);
+                            continue;
+                        }
                     }
                 }
 
@@ -500,6 +518,85 @@ mod tests {
             Event::FileDownSyncDone { path, folder } => {
                 assert_eq!(path, PathBuf::from("updated.txt"));
                 assert_eq!(folder, PathBuf::from("/data/folder"));
+            }
+            other => panic!("Unexpected event: {other:?}"),
+        }
+    }
+
+    /// An event referencing a folder id unknown to us must be skipped, not panic
+    #[test]
+    fn unknown_folder_id_is_skipped() {
+        let unknown = events_response(&[item_finished_event(
+            43,
+            "elsewhere.txt",
+            "unknownfid",
+            None,
+            "update",
+        )]);
+        let known = events_response(&[item_finished_event(44, "here.txt", "fid1", None, "update")]);
+        let server = MockServer::start(&[SYSTEM_CONFIG, "[]", &unknown, &known]);
+        let client = test_client(&server);
+
+        let event = client.iter_events().next().unwrap().unwrap();
+
+        match event {
+            Event::FileDownSyncDone { path, .. } => {
+                assert_eq!(path, PathBuf::from("here.txt"));
+            }
+            other => panic!("Unexpected event: {other:?}"),
+        }
+    }
+
+    /// A response with more events than requested must not panic: the first event is
+    /// processed and the others are fetched again once the cursor advances past it
+    #[test]
+    fn multiple_events_in_one_response_are_not_lost() {
+        let batch = events_response(&[
+            item_finished_event(43, "first.txt", "fid1", None, "update"),
+            item_finished_event(44, "second.txt", "fid1", None, "update"),
+        ]);
+        let refetched = events_response(&[item_finished_event(
+            44,
+            "second.txt",
+            "fid1",
+            None,
+            "update",
+        )]);
+        let server = MockServer::start(&[SYSTEM_CONFIG, "[]", &batch, &refetched]);
+        let client = test_client(&server);
+        let mut events = client.iter_events();
+
+        match events.next().unwrap().unwrap() {
+            Event::FileDownSyncDone { path, .. } => {
+                assert_eq!(path, PathBuf::from("first.txt"));
+            }
+            other => panic!("Unexpected event: {other:?}"),
+        }
+        match events.next().unwrap().unwrap() {
+            Event::FileDownSyncDone { path, .. } => {
+                assert_eq!(path, PathBuf::from("second.txt"));
+            }
+            other => panic!("Unexpected event: {other:?}"),
+        }
+        // The cursor advanced to the first event of the batch only
+        let requests = server.requests();
+        assert!(requests[3].contains("since=43"));
+    }
+
+    /// An event type we can parse but do not handle must be skipped, not panic
+    #[test]
+    fn unhandled_event_type_is_skipped() {
+        let started = r#"[{"id": 43, "globalID": 43, "type": "ItemStarted", "time": "2026-01-01T00:00:00Z", "data": {"item": "started.txt", "folder": "fid1", "type": "file", "action": "update"}}]"#;
+        let finished =
+            events_response(&[item_finished_event(44, "done.txt", "fid1", None, "update")]);
+        let server = MockServer::start(&[SYSTEM_CONFIG, "[]", started, &finished]);
+        let client = test_client(&server);
+
+        let event = client.iter_events().next().unwrap().unwrap();
+
+        match event {
+            Event::FileDownSyncDone { path, .. } => {
+                assert_eq!(path, PathBuf::from("done.txt"));
             }
             other => panic!("Unexpected event: {other:?}"),
         }
