@@ -79,26 +79,31 @@ fn main() -> anyhow::Result<()> {
                 // Event loop
                 let mut events = client.iter_events(cursor);
                 for event in events.by_ref() {
-                    // Handle special events
+                    // Handle event stream errors: reconnecting is always safer than
+                    // exiting, whatever the error (server gone or restarting, transient
+                    // transport failure, invalid server data...)
                     let event = match &event {
                         Err(err) => {
-                            if let Some(err) = err.downcast_ref::<syncthing::ServerGone>() {
+                            if err.downcast_ref::<syncthing::ServerGone>().is_some() {
                                 log::warn!(
                                     "Syncthing server is gone, will restart main loop. {:?}",
                                     err
                                 );
-                                break;
-                            } else if let Some(err) =
-                                err.downcast_ref::<syncthing::ServerConfigChanged>()
+                            } else if err
+                                .downcast_ref::<syncthing::ServerConfigChanged>()
+                                .is_some()
                             {
                                 log::warn!(
                                     "Syncthing server configuration changed, will restart main loop. {:?}",
                                     err
                                 );
-                                break;
+                            } else {
+                                log::error!(
+                                    "Event stream error, will restart main loop. {:?}",
+                                    err
+                                );
                             }
-                            event?;
-                            unreachable!();
+                            break;
                         }
                         Ok(event) => event,
                     };
