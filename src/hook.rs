@@ -4,7 +4,6 @@ use std::{
     collections::HashSet,
     path::{Path, PathBuf},
     process::{Child, Command, Stdio},
-    ptr,
     sync::{Arc, Mutex, mpsc},
     time::Duration,
 };
@@ -12,14 +11,14 @@ use std::{
 use crate::config;
 
 /// Unique identifier for a folder hook
+#[cfg_attr(test, derive(Debug))]
 #[derive(Clone, Eq, Hash, PartialEq)]
 pub(crate) struct FolderHookId(usize);
 
 impl FolderHookId {
-    /// Create unique identifier for hook
+    /// Create unique identifier for hook, from its parse time index
     pub(crate) fn from_hook(hook: &config::FolderHook) -> Self {
-        let val = ptr::from_ref(hook) as usize;
-        Self(val)
+        Self(hook.index)
     }
 }
 
@@ -111,6 +110,7 @@ mod tests {
             filter: None,
             command: command.iter().map(|a| (*a).to_owned()).collect(),
             allow_concurrent,
+            index: 0,
         }
     }
 
@@ -220,5 +220,25 @@ mod tests {
             assert!(Instant::now() < deadline);
             thread::sleep(Duration::from_millis(10));
         }
+    }
+
+    /// Hook identity must be identical for clones of the same hook (the hook map
+    /// stores clones), and unique across different hooks
+    #[test]
+    fn hook_id_is_stable_and_unique() {
+        let hook0 = hook(&["true"], None);
+        let hook1 = config::FolderHook {
+            index: 1,
+            ..hook0.clone()
+        };
+
+        assert_eq!(
+            FolderHookId::from_hook(&hook0),
+            FolderHookId::from_hook(&hook0.clone())
+        );
+        assert_ne!(
+            FolderHookId::from_hook(&hook0),
+            FolderHookId::from_hook(&hook1)
+        );
     }
 }

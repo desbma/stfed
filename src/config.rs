@@ -72,9 +72,29 @@ impl Default for Config {
 
 /// Folder hooks configurations
 #[derive(Debug, serde::Deserialize)]
+#[serde(from = "RawFolderConfig")]
 pub(crate) struct FolderConfig {
     /// Hooks array
     pub hooks: Vec<FolderHook>,
+}
+
+/// Folder hooks configurations as deserialized, before hook indexes are assigned
+#[derive(serde::Deserialize)]
+struct RawFolderConfig {
+    /// Hooks array
+    hooks: Vec<FolderHook>,
+}
+
+impl From<RawFolderConfig> for FolderConfig {
+    fn from(raw: RawFolderConfig) -> Self {
+        let mut hooks = raw.hooks;
+        // Assign hook indexes during deserialization so that every parsing path gets
+        // unique ones, they identify each hook at runtime
+        for (index, hook) in hooks.iter_mut().enumerate() {
+            hook.index = index;
+        }
+        Self { hooks }
+    }
 }
 
 /// Path string with ~ replaced, and canonicalized
@@ -126,6 +146,9 @@ pub(crate) struct FolderHook {
     pub command: Vec<String>,
     /// Allow concurrent runs for the same hook
     pub allow_concurrent: Option<bool>,
+    /// Unique hook index, assigned when parsing, used to identify the hook at runtime
+    #[serde(skip)]
+    pub index: usize,
 }
 
 /// Deserialize filter into a glob matcher to validate glob expression
