@@ -42,20 +42,45 @@ pub(crate) fn run(
 
         log::info!("Running hook: {hook:?} with path {path:?} and folder {folder:?}");
 
-        let child = Command::new(&hook.command[0])
+        let spawn_res = Command::new(&hook.command[0])
             .args(&hook.command[1..])
             .env("STFED_PATH", path.unwrap_or(&PathBuf::from("")))
             .env("STFED_FOLDER", folder)
             .stdin(Stdio::null())
-            .spawn()?;
-
-        reaper_tx.send((hook_id, child))?;
+            .spawn();
+        match spawn_res {
+            Ok(child) => {
+                if let Err(err) = reaper_tx.send((hook_id.clone(), child)) {
+                    // The reaper is gone so the process will not be waited on, but unmark
+                    // the hook or it could never run again
+                    unmark_running(running_hooks, &hook_id)?;
+                    return Err(err.into());
+                }
+            }
+            Err(err) => {
+                // No process to reap, unmark the hook or it could never run again
+                unmark_running(running_hooks, &hook_id)?;
+                return Err(err.into());
+            }
+        }
     } else {
         log::warn!(
             "A process is already running for this hook, and allow_concurrent is set for false, ignoring"
         );
     }
 
+    Ok(())
+}
+
+/// Unmark a hook as running
+fn unmark_running(
+    running_hooks: &Arc<Mutex<HashSet<FolderHookId>>>,
+    hook_id: &FolderHookId,
+) -> anyhow::Result<()> {
+    running_hooks
+        .lock()
+        .map_err(|_| anyhow::anyhow!("Failed to take lock"))?
+        .remove(hook_id);
     Ok(())
 }
 
@@ -77,14 +102,21 @@ pub(crate) fn reaper(
         loop {
             let mut do_loop = false;
             for (i, (hook_id, child)) in watched.iter_mut().enumerate() {
-                if let Some(rc) = child.try_wait()? {
-                    log::info!("Process exited with code {:?}", rc.code());
-                    {
-                        let mut running_hooks_locked = running_hooks
-                            .lock()
-                            .map_err(|_| anyhow::anyhow!("Failed to take lock"))?;
-                        running_hooks_locked.remove(hook_id);
+                let done = match child.try_wait() {
+                    Ok(Some(rc)) => {
+                        log::info!("Process exited with code {:?}", rc.code());
+                        true
                     }
+                    Ok(None) => false,
+                    Err(err) => {
+                        // Stop tracking the process: the reaper must survive, or hooks
+                        // could stay marked as running forever
+                        log::warn!("Failed to check hook process state: {err}");
+                        true
+                    }
+                };
+                if done {
+                    unmark_running(running_hooks, hook_id)?;
                     watched.swap_remove(i);
                     do_loop = true;
                     break;
@@ -220,5 +252,28 @@ mod tests {
             assert!(Instant::now() < deadline);
             thread::sleep(Duration::from_millis(10));
         }
+    }
+
+    /// A hook whose command fails to spawn must not stay marked as running
+    #[test]
+    fn failed_spawn_unmarks_hook() {
+        let hook = hook(&["/nonexistent/hook/command"], None);
+        let (reaper_tx, _reaper_rx) = mpsc::channel();
+        let running_hooks = Arc::new(Mutex::new(HashSet::new()));
+
+        assert!(run(&hook, None, Path::new("/"), &reaper_tx, &running_hooks).is_err());
+        assert!(running_hooks.lock().unwrap().is_empty());
+    }
+
+    /// A hook whose process can not be handed to the reaper must not stay marked as running
+    #[test]
+    fn reaper_handoff_failure_unmarks_hook() {
+        let hook = hook(&["true"], None);
+        let (reaper_tx, reaper_rx) = mpsc::channel();
+        drop(reaper_rx);
+        let running_hooks = Arc::new(Mutex::new(HashSet::new()));
+
+        assert!(run(&hook, None, Path::new("/"), &reaper_tx, &running_hooks).is_err());
+        assert!(running_hooks.lock().unwrap().is_empty());
     }
 }
