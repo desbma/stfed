@@ -40,15 +40,17 @@ fn main() -> anyhow::Result<()> {
     let (cfg, hooks) = config::parse().context("Failed to read local config")?;
 
     // Build hook map for fast matching
-    let mut hooks_map: HashMap<(config::FolderEvent, Rc<NormalizedPath>), Vec<config::FolderHook>> =
-        HashMap::new();
+    let mut hooks_map: HashMap<
+        (config::FolderEvent, Rc<NormalizedPath>),
+        Vec<&config::FolderHook>,
+    > = HashMap::new();
     for hook in &hooks.hooks {
         match hooks_map.entry((hook.event.clone(), Rc::new(hook.folder.clone()))) {
             Entry::Occupied(mut e) => {
-                e.get_mut().push(hook.clone());
+                e.get_mut().push(hook);
             }
             Entry::Vacant(e) => {
-                e.insert(vec![hook.clone()]);
+                e.insert(vec![hook]);
             }
         }
     }

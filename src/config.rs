@@ -111,7 +111,7 @@ impl Deref for NormalizedPath {
 }
 
 /// Configuration for a folder hook
-#[derive(Clone, Debug, serde::Deserialize)]
+#[derive(Debug, serde::Deserialize)]
 pub(crate) struct FolderHook {
     /// Absolute path of the folder
     pub folder: NormalizedPath,

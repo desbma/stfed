@@ -18,6 +18,8 @@ pub(crate) struct FolderHookId(usize);
 impl FolderHookId {
     /// Create unique identifier for hook
     pub(crate) fn from_hook(hook: &config::FolderHook) -> Self {
+        // Address identity is sound because hooks are not Clone and stay borrowed in place
+        // for the daemon lifetime
         let val = ptr::from_ref(hook) as usize;
         Self(val)
     }
