@@ -150,7 +150,13 @@ where
     D: serde::Deserializer<'de>,
 {
     let s = String::deserialize(deserializer)?;
-    shlex::split(&s).ok_or_else(|| serde::de::Error::custom(format!("Invalid command: {s:?}")))
+    let command = shlex::split(&s)
+        .ok_or_else(|| serde::de::Error::custom(format!("Invalid command: {s:?}")))?;
+    // An empty command would panic at hook run time
+    if command.is_empty() {
+        return Err(serde::de::Error::custom("Empty command"));
+    }
+    Ok(command)
 }
 
 /// Folder event kind
@@ -279,6 +285,24 @@ mod tests {
             folder = "{folder}"
             event = "file_down_sync_done"
             command = "notify-send 'unbalanced"
+            "#,
+            folder = dir.path().to_str().unwrap()
+        );
+
+        assert!(toml::from_str::<FolderConfig>(&toml_data).is_err());
+    }
+
+    /// An empty hook command must be rejected when parsing hooks, instead of panicking
+    /// when the hook first runs
+    #[test]
+    fn reject_empty_command() {
+        let dir = tempfile::tempdir().unwrap();
+        let toml_data = format!(
+            r#"
+            [[hooks]]
+            folder = "{folder}"
+            event = "file_down_sync_done"
+            command = ""
             "#,
             folder = dir.path().to_str().unwrap()
         );
