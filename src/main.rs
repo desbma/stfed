@@ -99,10 +99,21 @@ fn main() -> anyhow::Result<()> {
                     };
                     log::info!("New event: {event:?}");
 
+                    // Resolve the local path of the event folder
+                    let (syncthing::Event::FileDownSyncDone { folder, .. }
+                    | syncthing::Event::FolderDownSyncDone { folder }
+                    | syncthing::Event::FileConflict { folder, .. }) = event;
+                    let folder: Rc<NormalizedPath> = match folder.as_path().try_into() {
+                        Ok(folder) => Rc::new(folder),
+                        Err(err) => {
+                            log::error!("Ignoring event {event:?}: {err}");
+                            continue;
+                        }
+                    };
+
                     // Dispatch event
                     match event {
-                        syncthing::Event::FileDownSyncDone { path, folder } => {
-                            let folder: Rc<NormalizedPath> = Rc::new(folder.as_path().try_into()?);
+                        syncthing::Event::FileDownSyncDone { path, .. } => {
                             for hook in hooks_map
                                 .get(&(config::FolderEvent::FileDownSyncDone, Rc::clone(&folder)))
                                 .unwrap_or(&vec![])
@@ -132,8 +143,7 @@ fn main() -> anyhow::Result<()> {
                                 }
                             }
                         }
-                        syncthing::Event::FolderDownSyncDone { folder } => {
-                            let folder: Rc<NormalizedPath> = Rc::new(folder.as_path().try_into()?);
+                        syncthing::Event::FolderDownSyncDone { .. } => {
                             for hook in hooks_map
                                 .get(&(config::FolderEvent::FolderDownSyncDone, Rc::clone(&folder)))
                                 .unwrap_or(&vec![])
@@ -141,8 +151,7 @@ fn main() -> anyhow::Result<()> {
                                 hook::run(hook, None, &folder, &reaper_tx, &mut running_hooks)?;
                             }
                         }
-                        syncthing::Event::FileConflict { path, folder } => {
-                            let folder: Rc<NormalizedPath> = Rc::new(folder.as_path().try_into()?);
+                        syncthing::Event::FileConflict { path, .. } => {
                             for hook in hooks_map
                                 .get(&(config::FolderEvent::FileConflict, Rc::clone(&folder)))
                                 .unwrap_or(&vec![])

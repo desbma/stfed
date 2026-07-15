@@ -42,12 +42,21 @@ pub(crate) fn run(
     if allow_concurrent || !already_running {
         log::info!("Running hook: {hook:?} with path {path:?} and folder {folder:?}");
 
-        let child = Command::new(&hook.command[0])
+        let Ok(child) = Command::new(&hook.command[0])
             .args(&hook.command[1..])
             .env("STFED_PATH", path.unwrap_or(&PathBuf::from("")))
             .env("STFED_FOLDER", folder)
             .stdin(Stdio::null())
-            .spawn()?;
+            .spawn()
+            .inspect_err(|err| {
+                log::error!(
+                    "Failed to spawn hook command {command:?}: {err}",
+                    command = hook.command
+                );
+            })
+        else {
+            return Ok(());
+        };
 
         let token = Arc::new(());
         running_hooks.insert(hook_id, Arc::downgrade(&token));
@@ -226,14 +235,28 @@ mod tests {
         }
     }
 
-    /// A hook whose command fails to spawn must not stay marked as running
+    /// A hook command that fails to spawn must be logged, not propagated, and must not
+    /// mark the hook as running
     #[test]
-    fn failed_spawn_unmarks_hook() {
+    fn failed_spawn_is_not_fatal() {
         let hook = hook(&["/nonexistent/hook/command"], None);
-        let (reaper_tx, _reaper_rx) = mpsc::channel();
+        let (reaper_tx, reaper_rx) = mpsc::channel();
+        let mut running_hooks = HashMap::new();
+
+        run(&hook, None, Path::new("/"), &reaper_tx, &mut running_hooks).unwrap();
+
+        assert!(running_hooks.is_empty());
+        assert!(reaper_rx.try_recv().is_err());
+    }
+
+    /// A reaper channel send failure must be a fatal error
+    #[test]
+    fn dead_reaper_channel_is_fatal() {
+        let hook = hook(&["true"], None);
+        let (reaper_tx, reaper_rx) = mpsc::channel();
+        drop(reaper_rx);
         let mut running_hooks = HashMap::new();
 
         assert!(run(&hook, None, Path::new("/"), &reaper_tx, &mut running_hooks).is_err());
-        assert!(running_hooks.is_empty());
     }
 }
