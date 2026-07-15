@@ -1,13 +1,10 @@
 //! Syncthing Folder Event Daemon
 
 use std::{
-    collections::{
-        HashSet,
-        hash_map::{Entry, HashMap},
-    },
+    collections::hash_map::{Entry, HashMap},
     io,
     rc::Rc,
-    sync::{Arc, LazyLock, Mutex, mpsc},
+    sync::{LazyLock, mpsc},
     thread,
     time::Duration,
 };
@@ -57,15 +54,13 @@ fn main() -> anyhow::Result<()> {
     }
 
     // Setup running hooks state
-    let running_hooks: Arc<Mutex<HashSet<hook::FolderHookId>>> =
-        Arc::new(Mutex::new(HashSet::new()));
-    let running_hooks_reaper = Arc::clone(&running_hooks);
+    let mut running_hooks = HashMap::new();
 
     // Create reaper thread and channel
     let (reaper_tx, reaper_rx) = mpsc::channel();
     thread::Builder::new()
         .name("reaper".to_owned())
-        .spawn(move || -> anyhow::Result<()> { hook::reaper(&reaper_rx, &running_hooks_reaper) })?;
+        .spawn(move || -> anyhow::Result<()> { hook::reaper(&reaper_rx) })?;
 
     // Position reached in the event stream, to resume it where it stopped when the connection
     // is lost
@@ -116,7 +111,7 @@ fn main() -> anyhow::Result<()> {
                                         Some(path),
                                         &folder,
                                         &reaper_tx,
-                                        &running_hooks,
+                                        &mut running_hooks,
                                     )?;
                                 }
                             }
@@ -130,7 +125,7 @@ fn main() -> anyhow::Result<()> {
                                         Some(path),
                                         &folder,
                                         &reaper_tx,
-                                        &running_hooks,
+                                        &mut running_hooks,
                                     )?;
                                 }
                             }
@@ -141,7 +136,7 @@ fn main() -> anyhow::Result<()> {
                                 .get(&(config::FolderEvent::FolderDownSyncDone, Rc::clone(&folder)))
                                 .unwrap_or(&vec![])
                             {
-                                hook::run(hook, None, &folder, &reaper_tx, &running_hooks)?;
+                                hook::run(hook, None, &folder, &reaper_tx, &mut running_hooks)?;
                             }
                         }
                         syncthing::Event::FileConflict { path, folder } => {
@@ -150,7 +145,13 @@ fn main() -> anyhow::Result<()> {
                                 .get(&(config::FolderEvent::FileConflict, Rc::clone(&folder)))
                                 .unwrap_or(&vec![])
                             {
-                                hook::run(hook, Some(path), &folder, &reaper_tx, &running_hooks)?;
+                                hook::run(
+                                    hook,
+                                    Some(path),
+                                    &folder,
+                                    &reaper_tx,
+                                    &mut running_hooks,
+                                )?;
                             }
                         }
                     }

@@ -1,18 +1,18 @@
 //! Code to run hooks commands
 
 use std::{
-    collections::HashSet,
+    collections::HashMap,
     path::{Path, PathBuf},
     process::{Child, Command, Stdio},
     ptr,
-    sync::{Arc, Mutex, mpsc},
+    sync::{Arc, Weak, mpsc},
     time::Duration,
 };
 
 use crate::config;
 
 /// Unique identifier for a folder hook
-#[derive(Clone, Eq, Hash, PartialEq)]
+#[derive(Eq, Hash, PartialEq)]
 pub(crate) struct FolderHookId(usize);
 
 impl FolderHookId {
@@ -28,18 +28,16 @@ pub(crate) fn run(
     hook: &config::FolderHook,
     path: Option<&Path>,
     folder: &Path,
-    reaper_tx: &mpsc::Sender<(FolderHookId, Child)>,
-    running_hooks: &Arc<Mutex<HashSet<FolderHookId>>>,
+    reaper_tx: &mpsc::Sender<RunningHook>,
+    running_hooks: &mut HashMap<FolderHookId, Weak<()>>,
 ) -> anyhow::Result<()> {
     let allow_concurrent = hook.allow_concurrent.unwrap_or(false);
     let hook_id = FolderHookId::from_hook(hook);
-    let mut running_hooks_locked = running_hooks
-        .lock()
-        .map_err(|_| anyhow::anyhow!("Failed to take lock"))?;
-    if allow_concurrent || !running_hooks_locked.contains(&hook_id) {
-        running_hooks_locked.insert(hook_id.clone());
-        drop(running_hooks_locked);
-
+    let already_running = running_hooks
+        .get(&hook_id)
+        .and_then(Weak::upgrade)
+        .is_some();
+    if allow_concurrent || !already_running {
         log::info!("Running hook: {hook:?} with path {path:?} and folder {folder:?}");
 
         let child = Command::new(&hook.command[0])
@@ -49,7 +47,12 @@ pub(crate) fn run(
             .stdin(Stdio::null())
             .spawn()?;
 
-        reaper_tx.send((hook_id, child))?;
+        let token = Arc::new(());
+        running_hooks.insert(hook_id, Arc::downgrade(&token));
+        reaper_tx.send(RunningHook {
+            _token: token,
+            child,
+        })?;
     } else {
         log::warn!(
             "A process is already running for this hook, and allow_concurrent is set for false, ignoring"
@@ -59,12 +62,17 @@ pub(crate) fn run(
     Ok(())
 }
 
+/// A spawned hook process, whose liveness marks its hook as running
+pub(crate) struct RunningHook {
+    /// Token whose drop unmarks the hook as running
+    _token: Arc<()>,
+    /// The spawned process
+    child: Child,
+}
+
 /// Reaper thread function, that waits for started processes
-pub(crate) fn reaper(
-    rx: &mpsc::Receiver<(FolderHookId, Child)>,
-    running_hooks: &Arc<Mutex<HashSet<FolderHookId>>>,
-) -> anyhow::Result<()> {
-    let mut watched = Vec::new();
+pub(crate) fn reaper(rx: &mpsc::Receiver<RunningHook>) -> anyhow::Result<()> {
+    let mut watched: Vec<RunningHook> = Vec::new();
     loop {
         /// Wait delay for channel recv, only effective if having at least 1 process to watch
         const REAPER_WAIT_DELAY: Duration = Duration::from_millis(500);
@@ -76,15 +84,10 @@ pub(crate) fn reaper(
         }
         loop {
             let mut do_loop = false;
-            for (i, (hook_id, child)) in watched.iter_mut().enumerate() {
-                if let Some(rc) = child.try_wait()? {
+            for (i, running_hook) in watched.iter_mut().enumerate() {
+                if let Some(rc) = running_hook.child.try_wait()? {
                     log::info!("Process exited with code {:?}", rc.code());
-                    {
-                        let mut running_hooks_locked = running_hooks
-                            .lock()
-                            .map_err(|_| anyhow::anyhow!("Failed to take lock"))?;
-                        running_hooks_locked.remove(hook_id);
-                    }
+                    // Dropping the removed hook unmarks it as running
                     watched.swap_remove(i);
                     do_loop = true;
                     break;
@@ -119,13 +122,13 @@ mod tests {
     fn skip_run_while_previous_run_not_reaped() {
         let hook = hook(&["true"], None);
         let (reaper_tx, reaper_rx) = mpsc::channel();
-        let running_hooks = Arc::new(Mutex::new(HashSet::new()));
+        let mut running_hooks = HashMap::new();
 
-        run(&hook, None, Path::new("/"), &reaper_tx, &running_hooks).unwrap();
-        let (_hook_id, mut child) = reaper_rx.try_recv().unwrap();
-        child.wait().unwrap();
+        run(&hook, None, Path::new("/"), &reaper_tx, &mut running_hooks).unwrap();
+        let mut running_hook = reaper_rx.try_recv().unwrap();
+        running_hook.child.wait().unwrap();
 
-        run(&hook, None, Path::new("/"), &reaper_tx, &running_hooks).unwrap();
+        run(&hook, None, Path::new("/"), &reaper_tx, &mut running_hooks).unwrap();
         assert!(reaper_rx.try_recv().is_err());
     }
 
@@ -134,14 +137,14 @@ mod tests {
     fn concurrent_runs_when_allowed() {
         let hook = hook(&["true"], Some(true));
         let (reaper_tx, reaper_rx) = mpsc::channel();
-        let running_hooks = Arc::new(Mutex::new(HashSet::new()));
+        let mut running_hooks = HashMap::new();
 
-        run(&hook, None, Path::new("/"), &reaper_tx, &running_hooks).unwrap();
-        run(&hook, None, Path::new("/"), &reaper_tx, &running_hooks).unwrap();
+        run(&hook, None, Path::new("/"), &reaper_tx, &mut running_hooks).unwrap();
+        run(&hook, None, Path::new("/"), &reaper_tx, &mut running_hooks).unwrap();
 
         for _ in 0..2 {
-            let (_hook_id, mut child) = reaper_rx.try_recv().unwrap();
-            child.wait().unwrap();
+            let mut running_hook = reaper_rx.try_recv().unwrap();
+            running_hook.child.wait().unwrap();
         }
     }
 
@@ -156,19 +159,19 @@ mod tests {
         );
         let hook = hook(&["sh", "-c", &script], None);
         let (reaper_tx, reaper_rx) = mpsc::channel();
-        let running_hooks = Arc::new(Mutex::new(HashSet::new()));
+        let mut running_hooks = HashMap::new();
 
         run(
             &hook,
             Some(Path::new("sub/file.txt")),
             Path::new("/data/folder"),
             &reaper_tx,
-            &running_hooks,
+            &mut running_hooks,
         )
         .unwrap();
 
-        let (_hook_id, mut child) = reaper_rx.try_recv().unwrap();
-        assert!(child.wait().unwrap().success());
+        let mut running_hook = reaper_rx.try_recv().unwrap();
+        assert!(running_hook.child.wait().unwrap().success());
         assert_eq!(
             fs::read_to_string(&out).unwrap(),
             "sub/file.txt\n/data/folder"
@@ -186,19 +189,19 @@ mod tests {
         );
         let hook = hook(&["sh", "-c", &script], None);
         let (reaper_tx, reaper_rx) = mpsc::channel();
-        let running_hooks = Arc::new(Mutex::new(HashSet::new()));
+        let mut running_hooks = HashMap::new();
 
         run(
             &hook,
             None,
             Path::new("/data/folder"),
             &reaper_tx,
-            &running_hooks,
+            &mut running_hooks,
         )
         .unwrap();
 
-        let (_hook_id, mut child) = reaper_rx.try_recv().unwrap();
-        assert!(child.wait().unwrap().success());
+        let mut running_hook = reaper_rx.try_recv().unwrap();
+        assert!(running_hook.child.wait().unwrap().success());
         assert_eq!(fs::read_to_string(&out).unwrap(), "\n/data/folder");
     }
 
@@ -207,18 +210,28 @@ mod tests {
     fn reaper_unregisters_exited_hook() {
         let hook = hook(&["true"], None);
         let (reaper_tx, reaper_rx) = mpsc::channel();
-        let running_hooks = Arc::new(Mutex::new(HashSet::new()));
+        let mut running_hooks = HashMap::new();
 
-        run(&hook, None, Path::new("/"), &reaper_tx, &running_hooks).unwrap();
-        assert!(!running_hooks.lock().unwrap().is_empty());
+        run(&hook, None, Path::new("/"), &reaper_tx, &mut running_hooks).unwrap();
+        assert!(running_hooks.values().any(|t| t.upgrade().is_some()));
 
-        let running_hooks_reaper = Arc::clone(&running_hooks);
-        thread::spawn(move || reaper(&reaper_rx, &running_hooks_reaper));
+        thread::spawn(move || reaper(&reaper_rx));
 
         let deadline = Instant::now() + Duration::from_secs(5);
-        while !running_hooks.lock().unwrap().is_empty() {
+        while running_hooks.values().any(|t| t.upgrade().is_some()) {
             assert!(Instant::now() < deadline);
             thread::sleep(Duration::from_millis(10));
         }
+    }
+
+    /// A hook whose command fails to spawn must not stay marked as running
+    #[test]
+    fn failed_spawn_unmarks_hook() {
+        let hook = hook(&["/nonexistent/hook/command"], None);
+        let (reaper_tx, _reaper_rx) = mpsc::channel();
+        let mut running_hooks = HashMap::new();
+
+        assert!(run(&hook, None, Path::new("/"), &reaper_tx, &mut running_hooks).is_err());
+        assert!(running_hooks.is_empty());
     }
 }
