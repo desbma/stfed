@@ -42,8 +42,15 @@ impl Config {
         let xdg_dirs = xdg::BaseDirectories::with_prefix("syncthing");
         let st_config_filepath = xdg_dirs
             .find_state_file("config.xml")
-            .or_else(|| xdg_dirs.find_config_file("config.xml"))
-            .context("Unable fo find Synthing config file")?;
+            .or_else(|| xdg_dirs.find_config_file("config.xml"));
+        // Syncthing on macOS defaults to a location outside of XDG paths
+        #[cfg(target_os = "macos")]
+        let st_config_filepath = st_config_filepath.or_else(|| {
+            expand_tilde("~/Library/Application Support/Syncthing/config.xml")
+                .filter(|p| p.is_file())
+        });
+        let st_config_filepath =
+            st_config_filepath.context("Unable fo find Synthing config file")?;
         log::debug!("Found Syncthing config in {st_config_filepath:?}");
         let st_config_xml = fs::read_to_string(st_config_filepath)?;
         let st_config: SyncthingXmlConfig = quick_xml::de::from_str(&st_config_xml)?;
