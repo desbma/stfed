@@ -18,6 +18,7 @@ It is very light on ressource usage and is therefore suitable for use in all con
   - synchronisation conflict
 - light on system ressources
 - no runtime dependency outside of Syncthing
+- supports Linux and macOS
 
 ## Installation
 
@@ -37,6 +38,8 @@ install -D -t ~/.config/systemd/user ./systemd/stfed.service
 systemctl --user daemon-reload
 systemctl --user enable --now stfed.service
 ```
+
+On macOS, no service file is provided, use your preferred way of running a background service (for example a launchd user agent).
 
 ### From the AUR
 
@@ -84,6 +87,7 @@ event = "file_down_sync_done"
 filter = "shopping-list.txt"
 
 # command to run when event triggers
+# (notify-send is Linux specific, on macOS use for example: osascript -e 'display notification "..."')
 command = "notify-send 'stfef event triggered!'"
 
 # Whether to allow several commands for the same hook to run simultaneously
