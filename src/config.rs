@@ -62,21 +62,6 @@ impl Config {
     }
 }
 
-impl Default for Config {
-    fn default() -> Self {
-        #[expect(clippy::unwrap_used)]
-        Self::default_from_syncthing_config()
-            .with_context(|| {
-                format!(
-                    "Unable to guess {} configuration field values from Synthing config, \
-                 please write a config file",
-                    env!("CARGO_PKG_NAME")
-                )
-            })
-            .unwrap()
-    }
-}
-
 /// Folder hooks configurations
 #[derive(Debug, serde::Deserialize)]
 pub(crate) struct FolderConfig {
@@ -195,7 +180,13 @@ pub(crate) fn parse() -> anyhow::Result<(Config, FolderConfig)> {
         toml::from_str(&toml_data)?
     } else {
         log::warn!("Unable to find config file, using default config");
-        Config::default()
+        Config::default_from_syncthing_config().with_context(|| {
+            format!(
+                "Unable to guess {} configuration field values from Synthing config, \
+                 please write a config file",
+                env!("CARGO_PKG_NAME")
+            )
+        })?
     };
 
     log::trace!("Config: {config:?}");
