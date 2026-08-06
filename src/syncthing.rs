@@ -270,11 +270,12 @@ impl Iterator for FolderEventIterator<'_> {
                     item_type,
                     action: syncthing_rest::ItemAction::Update,
                 }) if item_type == "file" => {
-                    let folder_path = self
-                        .client
-                        .folder_map
-                        .get(&folder)
-                        .expect("Unknown folder id");
+                    // The folder may have been removed from the server config while its
+                    // events were still buffered
+                    let Some(folder_path) = self.client.folder_map.get(&folder) else {
+                        log::warn!("Ignoring event for unknown folder id {folder:?}");
+                        continue;
+                    };
                     Some(Ok(Event::FileDownSyncDone {
                         path: PathBuf::from(item),
                         folder: folder_path.to_owned(),
@@ -298,11 +299,13 @@ impl Iterator for FolderEventIterator<'_> {
                             e.insert(changed);
                         }
                     }
-                    let folder_path = self
-                        .client
-                        .folder_map
-                        .get(&evt_data.folder)
-                        .expect("Unknown folder id");
+                    let Some(folder_path) = self.client.folder_map.get(&evt_data.folder) else {
+                        log::warn!(
+                            "Ignoring event for unknown folder id {folder:?}",
+                            folder = evt_data.folder
+                        );
+                        continue;
+                    };
                     Some(Ok(Event::FolderDownSyncDone {
                         folder: folder_path.to_owned(),
                     }))
@@ -313,11 +316,13 @@ impl Iterator for FolderEventIterator<'_> {
                         && (evt_data.action == "modified")
                         && (evt_data.path.contains(".sync-conflict-"))
                     {
-                        let folder_path = self
-                            .client
-                            .folder_map
-                            .get(&evt_data.folder)
-                            .expect("Unknown folder id");
+                        let Some(folder_path) = self.client.folder_map.get(&evt_data.folder) else {
+                            log::warn!(
+                                "Ignoring event for unknown folder id {folder:?}",
+                                folder = evt_data.folder
+                            );
+                            continue;
+                        };
                         Some(Ok(Event::FileConflict {
                             path: PathBuf::from(evt_data.path),
                             folder: folder_path.to_owned(),
@@ -965,6 +970,36 @@ mod tests {
             }]
         );
         assert!(events.recv_timeout(NO_EVENT_DELAY).is_err());
+    }
+
+    /// An event referencing a folder absent from the server config, as when a folder is
+    /// removed while its events are still buffered, must be skipped instead of crashing
+    #[test]
+    fn ignore_event_of_unknown_folder() {
+        let server = TestSyncthingServer::start(&[(FOLDER_ID, FOLDER_PATH)]);
+
+        let events = stream_events(connect(server.url()), None);
+
+        server.wait_event_requests(2);
+        server.push_events(&[
+            ("ItemFinished", item_finished("gone.txt", "removedfid")),
+            (
+                "FolderSummary",
+                folder_summary("removedfid", 0, "2026-01-01T00:00:01Z"),
+            ),
+            (
+                "LocalChangeDetected",
+                local_change(
+                    "doc.sync-conflict-20260101-000000-AAAAAAA.txt",
+                    "removedfid",
+                    "file",
+                    "modified",
+                ),
+            ),
+            ("ItemFinished", item_finished("kept.txt", FOLDER_ID)),
+        ]);
+
+        assert_eq!(recv_events(&events, 1), [file_down_sync_done("kept.txt")]);
     }
 
     /// A server config change must interrupt the stream, so the folder map is rebuilt
