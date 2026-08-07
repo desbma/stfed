@@ -1,10 +1,7 @@
 //! Syncthing related code
 
 use std::{
-    collections::{
-        VecDeque,
-        hash_map::{Entry, HashMap},
-    },
+    collections::{HashMap, VecDeque},
     io,
     path::PathBuf,
     time::Duration,
@@ -37,8 +34,6 @@ pub(crate) struct Client {
     api_key: String,
     /// HTTP session
     session: ureq::Agent,
-    /// Folder id to path
-    folder_map: HashMap<String, PathBuf>,
     /// Start time of the server, changing each time it restarts
     start_time: String,
 }
@@ -85,33 +80,34 @@ impl Client {
                 .build(),
         );
 
-        // Get system config to build folder map
+        // Get system status
         let base_url = cfg.url.clone();
-        let system_config: syncthing_rest::SystemConfig = serde_json::from_str(&Self::get(
-            &session,
-            &base_url.join("rest/system/config")?,
-            &cfg.api_key,
-        )?)?;
         let system_status: syncthing_rest::SystemStatus = serde_json::from_str(&Self::get(
             &session,
             &base_url.join("rest/system/status")?,
             &cfg.api_key,
         )?)?;
 
-        // Build folder map
-        let folder_map = system_config
-            .folders
-            .into_iter()
-            .map(|f| (f.id, PathBuf::from(f.path)))
-            .collect();
-
         Ok(Self {
             base_url,
             session,
             api_key: cfg.api_key.clone(),
-            folder_map,
             start_time: system_status.start_time,
         })
+    }
+
+    /// Build the folder id to local path map, from the configuration the server currently has
+    fn folder_map(&self) -> anyhow::Result<HashMap<String, PathBuf>> {
+        let system_config: syncthing_rest::SystemConfig = serde_json::from_str(&Self::get(
+            &self.session,
+            &self.base_url.join("rest/system/config")?,
+            &self.api_key,
+        )?)?;
+        Ok(system_config
+            .folders
+            .into_iter()
+            .map(|f| (f.id, PathBuf::from(f.path)))
+            .collect())
     }
 
     /// Send a request to an endpoint, and return the response body
@@ -205,6 +201,10 @@ pub(crate) struct FolderEventIterator<'a> {
     client: &'a Client,
     /// Id of the last consumed event, `None` until the cursor has been primed
     last_id: Option<u64>,
+    /// Folder id to local path, empty until fetched from the server
+    folder_map: HashMap<String, PathBuf>,
+    /// Whether the folder map was fetched for the events of the current batch
+    folder_map_fetched: bool,
     /// Events received from the server, not yet consumed
     pending: VecDeque<syncthing_rest::Event>,
     /// Last state change for folder to avoid duplicates
@@ -217,6 +217,8 @@ impl<'a> FolderEventIterator<'a> {
         Self {
             client,
             last_id: resume_id,
+            folder_map: HashMap::new(),
+            folder_map_fetched: false,
             pending: VecDeque::new(),
             folder_state_change_time: HashMap::new(),
         }
@@ -228,6 +230,17 @@ impl<'a> FolderEventIterator<'a> {
             server_start_time: self.client.start_time.clone(),
             last_id,
         })
+    }
+
+    /// Local path of the folder with id `folder`, `None` if the server does not configure it
+    fn folder_path(&mut self, folder: &str) -> anyhow::Result<Option<PathBuf>> {
+        // The server applies a configuration change several seconds before it reports it with a
+        // ConfigSaved event, so a folder it configured since the last fetch is missing here
+        if !self.folder_map.contains_key(folder) && !self.folder_map_fetched {
+            self.folder_map = self.client.folder_map()?;
+            self.folder_map_fetched = true;
+        }
+        Ok(self.folder_map.get(folder).cloned())
     }
 }
 
@@ -253,6 +266,8 @@ impl Iterator for FolderEventIterator<'_> {
                     Ok(events) => self.pending.extend(events),
                     Err(err) => return Some(Err(err)),
                 }
+                // The server may have configured new folders since the previous batch
+                self.folder_map_fetched = false;
                 continue;
             };
 
@@ -270,14 +285,17 @@ impl Iterator for FolderEventIterator<'_> {
                     item_type,
                     action: syncthing_rest::ItemAction::Update,
                 }) if item_type == "file" => {
-                    let folder_path = self
-                        .client
-                        .folder_map
-                        .get(&folder)
-                        .expect("Unknown folder id");
+                    let folder_path = match self.folder_path(&folder) {
+                        Ok(Some(folder_path)) => folder_path,
+                        Ok(None) => {
+                            log::warn!("Ignoring event of unknown folder id {folder:?}");
+                            continue;
+                        }
+                        Err(err) => return Some(Err(err)),
+                    };
                     Some(Ok(Event::FileDownSyncDone {
                         path: PathBuf::from(item),
-                        folder: folder_path.to_owned(),
+                        folder: folder_path,
                     }))
                 }
                 syncthing_rest::EventData::FolderSummary(evt_data) => {
@@ -285,46 +303,49 @@ impl Iterator for FolderEventIterator<'_> {
                         // Not complete
                         continue;
                     }
+                    let folder_path = match self.folder_path(&evt_data.folder) {
+                        Ok(Some(folder_path)) => folder_path,
+                        Ok(None) => {
+                            log::warn!(
+                                "Ignoring event of unknown folder id {folder:?}",
+                                folder = evt_data.folder
+                            );
+                            continue;
+                        }
+                        Err(err) => return Some(Err(err)),
+                    };
                     let changed = evt_data.summary.state_changed;
-                    match self.folder_state_change_time.entry(evt_data.folder.clone()) {
-                        Entry::Occupied(mut e) => {
-                            if e.get() == &changed {
-                                // Duplicate event
-                                continue;
-                            }
-                            e.insert(changed);
-                        }
-                        Entry::Vacant(e) => {
-                            e.insert(changed);
-                        }
-                    }
-                    let folder_path = self
-                        .client
-                        .folder_map
-                        .get(&evt_data.folder)
-                        .expect("Unknown folder id");
-                    Some(Ok(Event::FolderDownSyncDone {
-                        folder: folder_path.to_owned(),
-                    }))
-                }
-                syncthing_rest::EventData::LocalChangeDetected(evt_data) => {
-                    // see https://github.com/syncthing/syncthing/issues/6121#issuecomment-549077477
-                    if (evt_data.item_type == "file")
-                        && (evt_data.action == "modified")
-                        && (evt_data.path.contains(".sync-conflict-"))
-                    {
-                        let folder_path = self
-                            .client
-                            .folder_map
-                            .get(&evt_data.folder)
-                            .expect("Unknown folder id");
-                        Some(Ok(Event::FileConflict {
-                            path: PathBuf::from(evt_data.path),
-                            folder: folder_path.to_owned(),
-                        }))
-                    } else {
+                    if self.folder_state_change_time.get(&evt_data.folder) == Some(&changed) {
+                        // Duplicate event
                         continue;
                     }
+                    self.folder_state_change_time
+                        .insert(evt_data.folder, changed);
+                    Some(Ok(Event::FolderDownSyncDone {
+                        folder: folder_path,
+                    }))
+                }
+                // see https://github.com/syncthing/syncthing/issues/6121#issuecomment-549077477
+                syncthing_rest::EventData::LocalChangeDetected(evt_data)
+                    if (evt_data.item_type == "file")
+                        && (evt_data.action == "modified")
+                        && (evt_data.path.contains(".sync-conflict-")) =>
+                {
+                    let folder_path = match self.folder_path(&evt_data.folder) {
+                        Ok(Some(folder_path)) => folder_path,
+                        Ok(None) => {
+                            log::warn!(
+                                "Ignoring event of unknown folder id {folder:?}",
+                                folder = evt_data.folder
+                            );
+                            continue;
+                        }
+                        Err(err) => return Some(Err(err)),
+                    };
+                    Some(Ok(Event::FileConflict {
+                        path: PathBuf::from(evt_data.path),
+                        folder: folder_path,
+                    }))
                 }
                 syncthing_rest::EventData::ConfigSaved(_) => {
                     Some(Err(ServerConfigChanged::ConfigSaved.into()))
@@ -392,6 +413,15 @@ mod tests {
     /// Local path of the folder the tests sync
     const FOLDER_PATH: &str = "/data/folder";
 
+    /// Id of a folder absent from the server configuration
+    const UNKNOWN_FOLDER_ID: &str = "fid2";
+
+    /// Id of a folder added to the server configuration while connected
+    const ADDED_FOLDER_ID: &str = "fid3";
+
+    /// Local path of the folder added to the server configuration while connected
+    const ADDED_FOLDER_PATH: &str = "/data/added";
+
     /// Event buffered by the server
     struct BufferedEvent {
         /// Event type, ie. `ItemFinished`
@@ -403,10 +433,14 @@ mod tests {
     /// Server state, shared with the request handling threads
     #[derive(Default)]
     struct State {
+        /// Local path of each configured folder, by folder id
+        folders: Vec<(String, String)>,
         /// Emitted events, in chronological order
         events: Vec<BufferedEvent>,
         /// Query string of each events request received, in order of reception
         event_requests: Vec<String>,
+        /// Number of system configuration requests received
+        config_requests: usize,
     }
 
     impl State {
@@ -462,25 +496,25 @@ mod tests {
             let server = Arc::new(tiny_http::Server::http("127.0.0.1:0").unwrap());
             let addr = server.server_addr().to_ip().unwrap();
             let url = url::Url::parse(&format!("http://{addr}/")).unwrap();
-            let state = Arc::new((Mutex::new(State::default()), Condvar::new()));
-
-            let system_config = json!({
-                "folders": folders
-                    .iter()
-                    .map(|(id, path)| json!({"id": id, "path": path}))
-                    .collect::<Vec<_>>(),
-            })
-            .to_string();
+            let state = Arc::new((
+                Mutex::new(State {
+                    folders: folders
+                        .iter()
+                        .map(|(id, path)| ((*id).to_owned(), (*path).to_owned()))
+                        .collect(),
+                    ..State::default()
+                }),
+                Condvar::new(),
+            ));
 
             let server_thread = Arc::clone(&server);
             let state_thread = Arc::clone(&state);
             thread::spawn(move || {
                 while let Ok(request) = server_thread.recv() {
                     let request_state = Arc::clone(&state_thread);
-                    let request_system_config = system_config.clone();
                     // Serve each request in its own thread, so a long polling events request
                     // does not delay the following ones
-                    thread::spawn(move || serve(request, &request_state, &request_system_config));
+                    thread::spawn(move || serve(request, &request_state));
                 }
             });
 
@@ -531,6 +565,22 @@ mod tests {
             let (state, _state_changed) = &*self.state;
             state.lock().unwrap().event_requests.clone()
         }
+
+        /// Add a folder to the configuration, as the server does before reporting the change
+        fn add_folder(&self, id: &str, path: &str) {
+            let (state, _state_changed) = &*self.state;
+            state
+                .lock()
+                .unwrap()
+                .folders
+                .push((id.to_owned(), path.to_owned()));
+        }
+
+        /// Number of system configuration requests received so far
+        fn config_requests(&self) -> usize {
+            let (state, _state_changed) = &*self.state;
+            state.lock().unwrap().config_requests
+        }
     }
 
     /// TCP relay in front of a server, able to close the connections it forwards
@@ -580,13 +630,13 @@ mod tests {
     }
 
     /// Serve a single request
-    fn serve(request: tiny_http::Request, state: &(Mutex<State>, Condvar), system_config: &str) {
+    fn serve(request: tiny_http::Request, state: &(Mutex<State>, Condvar)) {
         let url = url::Url::parse("http://localhost/")
             .unwrap()
             .join(request.url())
             .unwrap();
         let body = match url.path() {
-            "/rest/system/config" => system_config.to_owned(),
+            "/rest/system/config" => system_config(state),
             "/rest/system/status" => json!({
                 "myID": "TESTDEV-ICEID",
                 "startTime": SERVER_START_TIME,
@@ -600,6 +650,21 @@ mod tests {
         request
             .respond(tiny_http::Response::from_string(body).with_header(content_type))
             .unwrap();
+    }
+
+    /// Serve a system configuration request
+    fn system_config(state: &(Mutex<State>, Condvar)) -> String {
+        let (state, _state_changed) = state;
+        let mut state = state.lock().unwrap();
+        state.config_requests += 1;
+        json!({
+            "folders": state
+                .folders
+                .iter()
+                .map(|(id, path)| json!({"id": id, "path": path}))
+                .collect::<Vec<_>>(),
+        })
+        .to_string()
     }
 
     /// Serve an events request, long polling until an event is available or the timeout expires
@@ -965,6 +1030,62 @@ mod tests {
             }]
         );
         assert!(events.recv_timeout(NO_EVENT_DELAY).is_err());
+    }
+
+    /// An event of a folder absent from the server config must be skipped instead of crashing
+    #[test]
+    fn ignore_event_of_unknown_folder() {
+        let server = TestSyncthingServer::start(&[(FOLDER_ID, FOLDER_PATH)]);
+
+        let events = stream_events(connect(server.url()), None);
+
+        server.wait_event_requests(2);
+        server.push_events(&[
+            (
+                "ItemFinished",
+                item_finished("unknown.txt", UNKNOWN_FOLDER_ID),
+            ),
+            (
+                "FolderSummary",
+                folder_summary(UNKNOWN_FOLDER_ID, 0, "2026-01-01T00:00:01Z"),
+            ),
+            (
+                "LocalChangeDetected",
+                local_change(
+                    "doc.sync-conflict-20260101-000000-AAAAAAA.txt",
+                    UNKNOWN_FOLDER_ID,
+                    "file",
+                    "modified",
+                ),
+            ),
+            ("ItemFinished", item_finished("kept.txt", FOLDER_ID)),
+        ]);
+
+        assert_eq!(recv_events(&events, 1), [file_down_sync_done("kept.txt")]);
+        // A single batch of events must not cost more than one configuration request
+        assert_eq!(server.config_requests(), 1);
+    }
+
+    /// An event of a folder configured since the folder map was built must still be reported
+    #[test]
+    fn refresh_folder_map_on_unknown_folder() {
+        let server = TestSyncthingServer::start(&[(FOLDER_ID, FOLDER_PATH)]);
+
+        let events = stream_events(connect(server.url()), None);
+
+        server.wait_event_requests(2);
+        // The server applies a configuration change several seconds before it reports it with
+        // a ConfigSaved event, so its folders can be ahead of the folder map
+        server.add_folder(ADDED_FOLDER_ID, ADDED_FOLDER_PATH);
+        server.push_event("ItemFinished", item_finished("new.txt", ADDED_FOLDER_ID));
+
+        assert_eq!(
+            recv_events(&events, 1),
+            [Event::FileDownSyncDone {
+                path: PathBuf::from("new.txt"),
+                folder: PathBuf::from(ADDED_FOLDER_PATH),
+            }]
+        );
     }
 
     /// A server config change must interrupt the stream, so the folder map is rebuilt
